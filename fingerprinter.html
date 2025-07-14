@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+
+<html lang="en">
+
+<head>
+
+       
+    <meta charset="UTF-8">
+
+       
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+        <title>Audio Fingerprint Generator</title>
+
+       
+    <script src="https://cdn.tailwindcss.com"></script>
+
+        <!-- Meyda.js for audio analysis -->
+
+       
+    <script src="https://unpkg.com/meyda@5.3.0/dist/web/meyda.min.js"></script>
+
+</head>
+
+<body class="bg-gray-700 text-white flex items-center justify-center min-h-screen">
+
+
+
+        <div class="w-full max-w-md bg-gray-800 p-8 rounded-xl shadow-lg">
+
+                <h1 class="text-2xl font-bold text-center mb-2">Audio Fingerprint Tool</h1>
+
+                <p class="text-center text-gray-400 mb-6">Upload a short MP3/WAV to create a reference fingerprint.</p>
+
+
+
+                <div class="space-y-4">
+
+                        <div>
+
+                                <label for="soundName" class="block text-sm font-medium text-gray-300 mb-1">Name for
+                    this sound (e.g., "Buzzer")</label>
+
+                                <input type="text" id="soundName"
+                    class="w-full p-2 bg-gray-700 border border-gray-600 rounded-md focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                    placeholder="Match Start Sound">
+
+                            </div>
+
+                        <div>
+
+                                <label for="audioFile" class="block text-sm font-medium text-gray-300 mb-1">Audio File
+                    (MP3, WAV)</label>
+
+                                <input type="file" id="audioFile" accept="audio/*"
+                    class="w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-blue-500 file:text-white hover:file:bg-blue-600">
+
+                            </div>
+
+                    </div>
+
+
+
+                <div class="mt-8">
+
+                        <button id="saveButton"
+                class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-md transition duration-300">
+
+                                Generate and Save Fingerprint
+
+                            </button>
+
+                    </div>
+
+
+
+                <div id="statusMessage" class="mt-4 text-center h-6"></div>
+
+            </div>
+
+
+
+       
+    <script>
+
+        const soundNameInput = document.getElementById('soundName');
+
+        const audioFileInput = document.getElementById('audioFile');
+
+        const saveButton = document.getElementById('saveButton');
+
+        const statusMessage = document.getElementById('statusMessage');
+
+
+
+        // Use regular AudioContext for decoding (more reliable)
+
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+
+
+        function extractMFCCFingerprint(audioBuffer) {
+
+            const channelData = audioBuffer.getChannelData(0);
+
+            const bufferSize = 512; // Power of 2, required by Meyda
+
+            const hopSize = 256; // 50% overlap for better coverage
+
+
+
+            const mfccFrames = [];
+
+
+
+            // Process audio in chunks with overlap
+
+            for (let i = 0; i < channelData.length - bufferSize; i += hopSize) {
+
+                const chunk = channelData.slice(i, i + bufferSize);
+
+
+
+                // Ensure chunk is exactly bufferSize (pad with zeros if needed)
+
+                const paddedChunk = new Float32Array(bufferSize);
+
+                paddedChunk.set(chunk);
+
+
+
+                try {
+
+                    const mfcc = Meyda.extract('mfcc', paddedChunk);
+
+                    if (mfcc && mfcc.length > 0) {
+
+                        mfccFrames.push(mfcc);
+
+                    }
+
+                } catch (error) {
+
+                    console.warn('MFCC extraction failed for chunk:', error);
+
+                }
+
+            }
+
+
+
+            if (mfccFrames.length === 0) {
+
+                throw new Error('No MFCC features could be extracted from the audio');
+
+            }
+
+
+
+            // Average all MFCC frames to create a single fingerprint
+
+            const numCoefficients = mfccFrames[0].length;
+
+            const averagedMfcc = new Array(numCoefficients).fill(0);
+
+
+
+            for (const mfcc of mfccFrames) {
+
+                for (let i = 0; i < numCoefficients; i++) {
+
+                    averagedMfcc[i] += mfcc[i];
+
+                }
+
+            }
+
+
+
+            for (let i = 0; i < numCoefficients; i++) {
+
+                averagedMfcc[i] /= mfccFrames.length;
+
+            }
+
+
+
+            return averagedMfcc;
+
+        }
+
+
+
+        saveButton.addEventListener('click', async () => {
+
+            const soundName = soundNameInput.value.trim();
+
+            const file = audioFileInput.files[0];
+
+
+
+            if (!soundName || !file) {
+
+                statusMessage.textContent = 'Please provide a name and a file.';
+
+                statusMessage.style.color = '#fca5a5'; // red-300
+
+                return;
+
+            }
+
+
+
+            statusMessage.textContent = 'Processing...';
+
+            statusMessage.style.color = '#67e8f9'; // cyan-300
+
+
+
+            try {
+
+                const arrayBuffer = await file.arrayBuffer();
+
+                const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+
+
+
+                if (audioBuffer.length === 0) {
+
+                    throw new Error('Audio file appears to be empty or corrupted');
+
+                }
+
+
+
+                const fingerprint = extractMFCCFingerprint(audioBuffer);
+
+
+
+                // Send the fingerprint to the server
+
+                const response = await fetch('/api/fingerprints', {
+
+                    method: 'POST',
+
+                    headers: { 'Content-Type': 'application/json' },
+
+                    body: JSON.stringify({ name: soundName, mfcc: fingerprint })
+
+                });
+
+
+
+                if (!response.ok) {
+
+                    const errorText = await response.text();
+
+                    throw new Error(`Server error: ${response.status} - ${errorText}`);
+
+                }
+
+
+
+                const result = await response.json();
+
+                statusMessage.textContent = `Success! Saved fingerprint for "${result.name}".`;
+
+                statusMessage.style.color = '#86efac'; // green-300
+
+                soundNameInput.value = '';
+
+                audioFileInput.value = '';
+
+
+
+            } catch (error) {
+
+                console.error('Audio processing error:', error);
+
+                statusMessage.textContent = `Error: ${error.message}`;
+
+                statusMessage.style.color = '#fca5a5'; // red-300
+
+            }
+
+        });
+
+
+
+        // Enhanced file validation and auto-populate name
+
+        audioFileInput.addEventListener('change', (event) => {
+
+            const file = event.target.files[0];
+
+            if (file) {
+
+                const validTypes = ['audio/mp3', 'audio/mpeg', 'audio/wav', 'audio/wave'];
+
+                if (!validTypes.includes(file.type)) {
+
+                    statusMessage.textContent = 'Please select a valid audio file (MP3 or WAV)';
+
+                    statusMessage.style.color = '#fca5a5';
+
+                    event.target.value = '';
+
+                } else {
+
+                    statusMessage.textContent = '';
+
+                    // Auto-populate sound name from filename (remove extension)
+
+                    const fileName = file.name;
+
+                    const nameWithoutExtension = fileName.substring(0, fileName.lastIndexOf('.')) || fileName;
+
+                    soundNameInput.value = nameWithoutExtension;
+
+                }
+
+            }
+
+        });
+
+    </script>
+
+</body>
+
+</html>

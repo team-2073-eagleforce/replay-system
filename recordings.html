@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Match Recordings</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+    </style>
+</head>
+<body class="bg-gray-800 text-white p-8">
+
+    <div class="max-w-4xl mx-auto">
+        <h1 class="text-4xl font-bold text-center mb-8">Match Recordings</h1>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+            <!-- Video Player -->
+            <div class="md:col-span-2 bg-black rounded-lg shadow-lg overflow-hidden">
+                <video id="videoPlayer" class="w-full h-full" controls autoplay>
+                    Your browser does not support the video tag.
+                </video>
+            </div>
+
+            <!-- Playlist -->
+            <div class="bg-gray-900/50 p-4 rounded-lg">
+                <h2 class="text-xl font-bold mb-4">Playlist</h2>
+                <ul id="playlist" class="space-y-2 h-96 overflow-y-auto">
+                    <!-- Recordings will be listed here -->
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const videoPlayer = document.getElementById('videoPlayer');
+        const playlist = document.getElementById('playlist');
+
+        async function loadRecordings() {
+            try {
+                const response = await fetch('/api/recordings');
+                const files = await response.json();
+
+                if (files.length === 0) {
+                    playlist.innerHTML = '<li class="text-gray-400">No recordings found.</li>';
+                    return;
+                }
+
+                playlist.innerHTML = ''; // Clear existing list
+                files.forEach(file => {
+                    const li = document.createElement('li');
+                    const a = document.createElement('a');
+                    a.href = '#';
+                    a.textContent = file;
+                    a.className = 'block p-2 rounded-md hover:bg-blue-600 transition-colors';
+                    a.onclick = (e) => {
+                        e.preventDefault();
+                        playVideo(file);
+                        // Style the active item
+                        document.querySelectorAll('#playlist a').forEach(el => el.classList.remove('bg-blue-700'));
+                        a.classList.add('bg-blue-700');
+                    };
+                    li.appendChild(a);
+                    playlist.appendChild(li);
+                });
+                
+                // Autoplay the first video
+                if (files.length > 0) {
+                    playVideo(files[0]);
+                    playlist.querySelector('a').classList.add('bg-blue-700');
+                }
+
+            } catch (error) {
+                console.error('Failed to load recordings:', error);
+                playlist.innerHTML = '<li class="text-red-400">Error loading recordings.</li>';
+            }
+        }
+
+        function playVideo(filename) {
+            videoPlayer.src = `/recordings/${filename}`;
+            videoPlayer.load();
+            videoPlayer.play();
+        }
+
+        // Load recordings when the page opens
+        loadRecordings();
+    </script>
+</body>
+</html>
