@@ -12,74 +12,43 @@
         #videoContainer { min-height: 480px; }
         .event-log-item { animation: fadeIn 0.5s ease-in-out; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        
-        .listening-indicator span {
-            height: 10px;
-            width: 10px;
-            background-color: #34D399;
-            border-radius: 50%;
-            display: inline-block;
-            animation: pulse 1.5s infinite;
-        }
+        .listening-indicator span { height: 10px; width: 10px; background-color: #34D399; border-radius: 50%; display: inline-block; animation: pulse 1.5s infinite; }
         @keyframes pulse {
             0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.7); }
             70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(52, 211, 153, 0); }
             100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(52, 211, 153, 0); }
         }
-        
-        .recording-indicator {
-            background-color: #EF4444;
-            border-radius: 50%;
-            animation: recording-pulse 1s infinite;
-        }
-        @keyframes recording-pulse {
-            0% { opacity: 1; }
-            50% { opacity: 0.5; }
-            100% { opacity: 1; }
-        }
+        .recording-indicator { background-color: #EF4444; border-radius: 50%; animation: recording-pulse 1s infinite; }
+        @keyframes recording-pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
     </style>
 </head>
 <body class="bg-gray-800 text-white flex flex-col items-center justify-center min-h-screen p-4">
 
     <div class="w-full max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <!-- Main Viewer Column -->
         <div class="lg:col-span-2">
             <h1 class="text-3xl font-bold mb-2 text-center">Live Viewer</h1>
             <p class="text-gray-400 mb-6 text-center">Select a camera to begin streaming and audio analysis.</p>
-
             <div class="bg-gray-900/50 backdrop-blur-sm p-6 rounded-2xl shadow-2xl border border-gray-700">
                 <div class="mb-4 flex flex-col md:flex-row items-center justify-between gap-4">
-                    <select id="cameraSelector" class="flex-1 max-w-md p-3 text-center bg-gray-800 border border-gray-600 text-white rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition">
-                        <!-- CAMERA_OPTIONS_PLACEHOLDER -->
-                    </select>
-                    
-                    <!-- Recording Status and Controls -->
+                    <select id="cameraSelector" class="flex-1 max-w-md p-3 text-center bg-gray-800 border border-gray-600 text-white rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition"></select>
                     <div class="flex items-center gap-4">
                         <div id="recordingStatus" class="hidden items-center gap-2">
                             <span class="recording-indicator w-3 h-3"></span>
                             <span class="text-red-400 font-semibold">RECORDING</span>
                         </div>
-                        <button id="manualRecordButton" class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-md transition duration-300">
-                            Start Recording
-                        </button>
-                        <button id="manualStopButton" class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-md transition duration-300">
-                            Stop Recording
-                        </button>
+                        <button id="manualRecordButton" class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-md transition duration-300">Start Recording</button>
+                        <button id="manualStopButton" class="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-md transition duration-300">Stop Recording</button>
                     </div>
                 </div>
-                
                 <div id="videoContainer" class="bg-black rounded-lg shadow-inner overflow-hidden relative flex items-center justify-center">
                     <video id="videoElement" class="w-full h-auto" controls autoplay muted playsinline></video>
                     <div id="messageArea" class="absolute text-gray-300 font-semibold text-lg"></div>
                 </div>
-                
                 <div class="text-center mt-4">
                     <button id="resetMatchButton" class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-5 rounded-md transition duration-300">Reset Match</button>
                 </div>
             </div>
         </div>
-
-        <!-- Event Log Column -->
         <div class="lg:col-span-1">
             <div class="flex items-center justify-center mb-2">
                 <h2 class="text-2xl font-bold text-center">Game State</h2>
@@ -88,16 +57,12 @@
                     <p class="ml-2 text-sm text-green-400">LISTENING</p>
                 </div>
             </div>
-            
             <div class="mb-4 p-4 bg-gray-900 rounded-lg shadow-lg text-center">
                 <p id="gameStateDisplay" class="text-2xl font-bold text-yellow-400 tracking-wider">WAITING FOR MATCH</p>
                 <p id="recordingInfo" class="text-sm text-gray-400 mt-2 hidden">Auto-recording enabled</p>
             </div>
-
             <h2 class="text-2xl font-bold mb-4 text-center">Event Log</h2>
-            <div id="eventLog" class="bg-gray-900/50 p-4 rounded-2xl shadow-lg border border-gray-700 space-y-3 h-96 overflow-y-auto">
-                <!-- Events will be added here -->
-            </div>
+            <div id="eventLog" class="bg-gray-900/50 p-4 rounded-2xl shadow-lg border border-gray-700 space-y-3 h-96 overflow-y-auto"></div>
         </div>
     </div>
 
@@ -112,28 +77,26 @@
         const recordingStatus = document.getElementById('recordingStatus');
         const recordingInfo = document.getElementById('recordingInfo');
         const manualRecordButton = document.getElementById('manualRecordButton');
+        const manualStopButton = document.getElementById('manualStopButton');
 
-        let player, audioContext, analyzer;
+        let player, audioContext, analyzer, sourceNode;
         let referenceFingerprints = {};
         let matchTimeoutId = null;
         let currentCameraKey = null;
         let isRecording = false;
-        
-        const MATCH_STATES = {
-            WAITING: 'WAITING FOR MATCH',
-            AUTO: 'WAITING FOR AUTO END',
-            TELEOP: 'WAITING FOR GAME END'
-        };
-        let currentMatchState = MATCH_STATES.WAITING;
+        let streamReconnectAttempts = 0;
+        let isStreamSwitching = false;
+        let cleanupInProgress = false;
 
-        // Recording status check interval
+        const MAX_RECONNECT_ATTEMPTS = 3;
+        const MATCH_STATES = { WAITING: 'WAITING FOR MATCH', AUTO: 'WAITING FOR AUTO END', TELEOP: 'WAITING FOR GAME END' };
+        let currentMatchState = MATCH_STATES.WAITING;
+        
         setInterval(checkRecordingStatus, 1000);
 
         async function checkRecordingStatus() {
             try {
-                const response = await fetch('/api/recording-status');
-                const status = await response.json();
-                
+                const status = await (await fetch('/api/recording-status')).json();
                 if (status.isRecording !== isRecording) {
                     isRecording = status.isRecording;
                     updateRecordingUI();
@@ -144,35 +107,22 @@
         }
 
         function updateRecordingUI() {
-            if (isRecording) {
-                recordingStatus.classList.remove('hidden');
-                recordingStatus.classList.add('flex');
-                recordingInfo.classList.remove('hidden');
-                manualRecordButton.textContent = 'Stop Recording';
-                manualRecordButton.className = 'bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-md transition duration-300';
-            } else {
-                recordingStatus.classList.add('hidden');
-                recordingStatus.classList.remove('flex');
-                recordingInfo.classList.add('hidden');
-                manualRecordButton.textContent = 'Start Recording';
-                manualRecordButton.className = 'bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-md transition duration-300';
-            }
+            const isRec = isRecording;
+            recordingStatus.classList.toggle('hidden', !isRec);
+            recordingStatus.classList.toggle('flex', isRec);
+            recordingInfo.classList.toggle('hidden', !isRec);
+            manualRecordButton.disabled = isRec;
+            manualStopButton.disabled = !isRec;
+            manualRecordButton.className = isRec ? 'bg-gray-600 text-white font-bold py-2 px-4 rounded-md cursor-not-allowed' : 'bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-md transition duration-300';
+            manualStopButton.className = !isRec ? 'bg-gray-600 text-white font-bold py-2 px-4 rounded-md cursor-not-allowed' : 'bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-md transition duration-300';
         }
 
-        async function sendMatchEvent(eventType) {
-            try {
-                const response = await fetch('/api/match-event', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ eventType, cameraKey: currentCameraKey })
-                });
-                
-                if (!response.ok) {
-                    console.error('Failed to send match event:', response.status);
-                }
-            } catch (error) {
-                console.error('Error sending match event:', error);
-            }
+        function sendMatchEvent(eventType) {
+            fetch('/api/match-event', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ eventType, cameraKey: currentCameraKey })
+            }).catch(err => console.error('Error sending match event:', err));
         }
 
         function updateGameStateDisplay() {
@@ -182,16 +132,9 @@
         function logEvent(name, confidence) {
             const now = new Date();
             const timestamp = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
-            
             const eventItem = document.createElement('div');
             eventItem.className = 'bg-gray-800 p-3 rounded-lg event-log-item';
-            eventItem.innerHTML = `
-                <div class="flex justify-between items-center">
-                    <span class="font-bold text-lg text-cyan-400">${name}</span>
-                    <span class="text-xs text-gray-400">${timestamp}</span>
-                </div>
-                <div class="text-sm text-gray-300">Confidence (dist): ${confidence.toFixed(2)}</div>
-            `;
+            eventItem.innerHTML = `<div class="flex justify-between items-center"><span class="font-bold text-lg text-cyan-400">${name}</span><span class="text-xs text-gray-400">${timestamp}</span></div><div class="text-sm text-gray-300">Confidence (dist): ${confidence.toFixed(2)}</div>`;
             eventLog.prepend(eventItem);
         }
         
@@ -200,235 +143,235 @@
             updateGameStateDisplay();
             eventLog.innerHTML = '';
             console.log("Match state reset by user.");
-            
-            // Send abort event to stop any ongoing recording
             sendMatchEvent('MATCH_ABORT');
-            
-            if (matchTimeoutId) {
-                clearTimeout(matchTimeoutId);
-                matchTimeoutId = null;
-                console.log("Fail-safe timer cancelled by manual reset.");
-            }
+            if (matchTimeoutId) clearTimeout(matchTimeoutId);
+            matchTimeoutId = null;
         });
 
-
-        manualRecordButton.addEventListener('click', async () => {
-            // Get the CURRENT value from the dropdown when the button is clicked
+        const handleRecordingAction = async (action) => {
             const cameraKey = cameraSelector.value;
-
-            // Check if a camera is actually selected
-            if (!cameraKey) {
-                messageArea.textContent = 'Please select a camera before recording.';
-                return;
-            }
-
-            console.log(`Manually starting recording for camera: ${cameraKey}`);
-            messageArea.textContent = `Starting recording for ${cameraKey}...`;
-
+            if (!cameraKey && action === 'start') return messageArea.textContent = 'Please select a camera.';
+            messageArea.textContent = action === 'start' ? 'Starting recording...' : 'Stopping recording...';
             try {
-                // Send the request to the server's API endpoint
-                const response = await fetch('/api/record/start', {
+                const response = await fetch(`/api/record/${action}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ cameraKey: cameraKey }) // Send the selected camera key
-                });
-
-                if (!response.ok) {
-                    const errorResult = await response.json();
-                    throw new Error(errorResult.message || 'Failed to start recording.');
-                }
-
-                const result = await response.json();
-                messageArea.textContent = result.message; // Should say "Recording started."
-
-            } catch (error) {
-                console.error('Manual recording error:', error);
-                messageArea.textContent = `Error: ${error.message}`;
-            }
-        });
-
-        const manualStopButton = document.getElementById('manualStopButton');
-
-        manualStopButton.addEventListener('click', async () => {
-        messageArea.textContent = 'Stopping recording...';
-
-        // --> ADD THIS LINE: Cancel the fail-safe timer <--
-        if (matchTimeoutId) {
-            clearTimeout(matchTimeoutId);
-            matchTimeoutId = null;
-            console.log("Fail-safe timer cancelled by manual stop.");
-        }
-
-            try {
-                const response = await fetch('/api/record/stop', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' }
+                    body: JSON.stringify({ cameraKey })
                 });
                 const result = await response.json();
                 messageArea.textContent = result.message;
             } catch (error) {
                 messageArea.textContent = `Error: ${error.message}`;
             }
-        });
+        };
+
+        manualRecordButton.addEventListener('click', () => handleRecordingAction('start'));
+        manualStopButton.addEventListener('click', () => handleRecordingAction('stop'));
 
         function compareAndFindMatch(liveMfcc) {
             let bestMatch = { name: null, distance: Infinity };
             const MATCH_THRESHOLD = 45;
-
             for (const name in referenceFingerprints) {
                 const refMfcc = referenceFingerprints[name];
                 let distance = Math.sqrt(refMfcc.reduce((sum, val, i) => sum + Math.pow(val - liveMfcc[i], 2), 0));
                 if (distance < bestMatch.distance) {
-                    bestMatch.distance = distance;
-                    bestMatch.name = name;
+                    bestMatch = { distance, name };
                 }
             }
-
             if (bestMatch.distance < MATCH_THRESHOLD) {
                 if (currentMatchState === MATCH_STATES.WAITING && bestMatch.name.toLowerCase().includes('start')) {
                     logEvent("Match Start", bestMatch.distance);
                     currentMatchState = MATCH_STATES.AUTO;
-                    
-                    // Send match start event for recording
                     sendMatchEvent('MATCH_START');
-                    
-                    const MATCH_DURATION_MS = 3 * 60 * 1000; // 3 minutes
                     if (matchTimeoutId) clearTimeout(matchTimeoutId);
-                    console.log(`Starting 3-minute match fail-safe timer.`);
                     matchTimeoutId = setTimeout(() => {
-                        if (currentMatchState === MATCH_STATES.AUTO || currentMatchState === MATCH_STATES.TELEOP) {
-                            console.log("Match timer expired. Forcing end.");
-                            logEvent("Forced End (Timeout)", 0);
-                            currentMatchState = MATCH_STATES.WAITING;
-                            updateGameStateDisplay();
-                            sendMatchEvent('MATCH_END');
-                        }
-                    }, MATCH_DURATION_MS);
-
+                        console.log("Match timer expired. Forcing end.");
+                        logEvent("Forced End (Timeout)", 0);
+                        currentMatchState = MATCH_STATES.WAITING;
+                        updateGameStateDisplay();
+                        sendMatchEvent('MATCH_END');
+                    }, 3 * 60 * 1000);
                 } else if (currentMatchState === MATCH_STATES.AUTO && bestMatch.name.toLowerCase().includes('end')) {
                     logEvent("Auto End", bestMatch.distance);
                     currentMatchState = MATCH_STATES.TELEOP;
-                    
                 } else if (currentMatchState === MATCH_STATES.TELEOP && bestMatch.name.toLowerCase().includes('end')) {
                     logEvent("Game End", bestMatch.distance);
                     currentMatchState = MATCH_STATES.WAITING;
-                    
-                    // Send match end event for recording
                     sendMatchEvent('MATCH_END');
-
-                    if (matchTimeoutId) {
-                        clearTimeout(matchTimeoutId);
-                        matchTimeoutId = null;
-                        console.log("Normal game end detected. Fail-safe timer cancelled.");
-                    }
+                    if (matchTimeoutId) clearTimeout(matchTimeoutId);
+                    matchTimeoutId = null;
                 }
-                
                 updateGameStateDisplay();
                 stopAnalysis(3000); 
             }
         }
+        
+        function stopAnalysis(duration) {
+            if (!analyzer) return;
+            analyzer.stop();
+            listeningIndicator.classList.add('hidden');
+            setTimeout(() => {
+                if (analyzer) {
+                    analyzer.start();
+                    listeningIndicator.classList.remove('hidden');
+                }
+            }, duration);
+        }
+
+        async function initializeApp() {
+            updateGameStateDisplay();
+            videoElement.style.display = 'none';
+            cameraSelector.innerHTML = '<option value="">Loading...</option>';
+            cameraSelector.disabled = true;
+            try {
+                const [cameras, fingerprints] = await Promise.all([
+                    fetch('/api/cameras').then(res => res.json()),
+                    fetch('/api/fingerprints').then(res => res.json())
+                ]);
+                referenceFingerprints = fingerprints;
+                cameraSelector.innerHTML = '<option value="" disabled selected>-- Select a Camera --</option>';
+                for (const key in cameras) {
+                    const option = document.createElement('option');
+                    option.value = key;
+                    option.textContent = cameras[key].name;
+                    cameraSelector.appendChild(option);
+                }
+                cameraSelector.disabled = false;
+            } catch (error) {
+                console.error("Initialization failed:", error);
+                messageArea.textContent = `Error: ${error.message}`;
+                cameraSelector.innerHTML = '<option value="">Could not load</option>';
+            }
+        }
+
+        // --- MODIFIED FUNCTION ---
+        function cleanupCurrentStream() {
+            if (cleanupInProgress) return;
+            cleanupInProgress = true;
+            console.log('[CLIENT] Cleaning up current stream');
+            
+            // **NEW:** Explicitly tell the server to disconnect this camera stream
+            if (currentCameraKey && navigator.sendBeacon) {
+                const headers = { type: 'application/json' };
+                const blob = new Blob([JSON.stringify({ cameraKey: currentCameraKey })], headers);
+                navigator.sendBeacon('/api/stream/disconnect', blob);
+                console.log(`[CLIENT] Sent disconnect beacon for ${currentCameraKey}`);
+            }
+
+            try {
+                if (analyzer) analyzer.stop();
+                if (sourceNode) sourceNode.disconnect();
+                if (audioContext && audioContext.state !== 'closed') audioContext.close();
+                if (player) {
+                    if (videoElement && !videoElement.paused) videoElement.pause();
+                    player.unload();
+                    player.detachMediaElement();
+                    player.destroy();
+                }
+                if (videoElement) {
+                    videoElement.removeAttribute('src');
+                    videoElement.load();
+                }
+            } catch (error) {
+                console.error('[CLIENT] Error during local cleanup:', error);
+            } finally {
+                [player, audioContext, analyzer, sourceNode, currentCameraKey] = [null, null, null, null, null];
+                listeningIndicator.classList.add('hidden');
+                streamReconnectAttempts = 0;
+                cleanupInProgress = false;
+            }
+        }
+
+        function loadCameraStream(cameraKey) {
+            if (!cameraKey || isStreamSwitching) return;
+            isStreamSwitching = true;
+            console.log(`[CLIENT] Loading camera stream: ${cameraKey}`);
+            cleanupCurrentStream();
+            setTimeout(() => {
+                currentCameraKey = cameraKey;
+                attemptStreamConnection(cameraKey);
+                isStreamSwitching = false;
+            }, 250); // Slightly increased delay for smoother transition
+        }
+
+        function attemptStreamConnection(cameraKey) {
+            if (!cameraKey || cameraKey !== currentCameraKey) return;
+            messageArea.textContent = `Connecting to ${cameraKey}...`;
+            videoElement.style.display = 'block';
+            try {
+                player = mpegts.createPlayer({
+                    type: 'flv', isLive: true, url: `/stream?camera=${cameraKey}`,
+                    cors: true, hasAudio: true, hasVideo: true
+                });
+                player.on(mpegts.Events.ERROR, (type, details) => handleStreamError('MediaError', details));
+                player.on(mpegts.Events.MEDIA_INFO, handleMediaInfo);
+                player.attachMediaElement(videoElement);
+                player.load();
+                player.play().catch(err => handleStreamError('PLAY_ERROR', err));
+            } catch (error) {
+                handleStreamError('CREATION_ERROR', error);
+            }
+        }
+
+        function handleStreamError(type, error) {
+            console.error(`[CLIENT] Stream error (${type}):`, error);
+            if (currentCameraKey !== cameraSelector.value) return;
+            if (streamReconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                streamReconnectAttempts++;
+                const delay = 2000 * streamReconnectAttempts;
+                messageArea.textContent = `Connection failed. Retrying in ${delay/1000}s...`;
+                if (player) { try { player.destroy(); } catch(e){} player = null; }
+                setTimeout(() => {
+                    if (currentCameraKey === cameraSelector.value) attemptStreamConnection(currentCameraKey);
+                }, delay);
+            } else {
+                messageArea.textContent = 'Failed to connect to stream.';
+                cleanupCurrentStream();
+            }
+        }
+
+        function handleMediaInfo(mediaInfo) {
+            console.log('[CLIENT] Media info received:', mediaInfo);
+            messageArea.textContent = "";
+            if (Object.keys(referenceFingerprints).length > 0 && !analyzer) {
+                setTimeout(() => {
+                    if (videoElement && !videoElement.paused) startAnalysis();
+                }, 1000);
+            }
+        }
 
         function startAnalysis() {
-                    if (Object.keys(referenceFingerprints).length === 0) {
-                        messageArea.textContent = "No audio fingerprints loaded.";
-                        return;
-                    }
-                    if (!audioContext) {
-                        audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                    }
-                    audioContext.resume();
-                    if (analyzer) {
-                        analyzer.start();
-                        listeningIndicator.classList.remove('hidden');
-                        listeningIndicator.classList.add('flex');
-                        return;
-                    }
-                    const sourceNode = audioContext.createMediaElementSource(videoElement);
+            try {
+                if (!audioContext || audioContext.state === 'closed') audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                if (audioContext.state === 'suspended') audioContext.resume();
+                if (!sourceNode) {
+                    sourceNode = audioContext.createMediaElementSource(videoElement);
                     sourceNode.connect(audioContext.destination);
-                    analyzer = Meyda.createMeydaAnalyzer({
-                        audioContext,
-                        source: sourceNode,
-                        bufferSize: 512,
-                        featureExtractors: ["mfcc", "loudness"],
-                        callback: features => {
-                            console.log(`Current Loudness: ${features.loudness.total.toFixed(2)}`);
-                            const LOUDNESS_THRESHOLD = 20; // Tune this loudness threshold
-                            if (features.loudness.total > LOUDNESS_THRESHOLD) {
-                                console.log('Loudness threshold passed. Comparing fingerprint...');
-                                compareAndFindMatch(features.mfcc);
-                            }
+                }
+                analyzer = Meyda.createMeydaAnalyzer({
+                    audioContext, source: sourceNode, bufferSize: 512,
+                    featureExtractors: ["mfcc", "loudness"],
+                    callback: features => {
+                        if (features && features.loudness && features.loudness.total > 20) {
+                            compareAndFindMatch(features.mfcc);
                         }
-                    });
-                    analyzer.start();
-                    messageArea.textContent = "";
-                    listeningIndicator.classList.remove('hidden');
-                    listeningIndicator.classList.add('flex');
-                }
-
-
-
-
-                function stopAnalysis(duration) {
-                    if (!analyzer) return;
-                    analyzer.stop();
-                    listeningIndicator.classList.add('hidden');
-                    listeningIndicator.classList.remove('flex');
-                    setTimeout(() => {
-                        if (analyzer) {
-                            analyzer.start();
-                            listeningIndicator.classList.remove('hidden');
-                            listeningIndicator.classList.add('flex');
-                        }
-                    }, duration);
-                }
-
-                function loadCameraStream(cameraKey) {
-                    if (!cameraKey) {
-                        messageArea.textContent = 'Please select a camera.';
-                        videoElement.style.display = 'none';
-                        return;
                     }
-                    if (player) player.destroy();
-                    if (mpegts.getFeatureList().mseLivePlayback) {
-                        const streamUrl = `/stream?camera=${cameraKey}`;
-                        messageArea.textContent = 'Connecting to stream...';
-                        videoElement.style.display = 'block';
-                        player = mpegts.createPlayer({ type: 'flv', isLive: true, url: streamUrl, cors: true });
-                        player.attachMediaElement(videoElement);
-                        player.load();
-                        player.play();
-                        player.on(mpegts.Events.MEDIA_INFO, () => {
-                            messageArea.textContent = "";
-                            startAnalysis();
-                        });
-                        player.on(mpegts.Events.ERROR, () => messageArea.textContent = 'Error connecting to stream.');
-                    } else {
-                        messageArea.textContent = 'Browser not supported for streaming.';
-                    }
-                }
+                });
+                analyzer.start();
+                listeningIndicator.classList.remove('hidden');
+            } catch (error) {
+                console.error('[CLIENT] Error starting audio analysis:', error);
+            }
+        }
 
-                // --- UPDATED: This function no longer fetches cameras ---
-                async function initializeApp() {
-                    updateGameStateDisplay();
-                    videoElement.style.display = 'none';
-                    
-                    // The camera list is now rendered by the server.
-                    // We only need to fetch the fingerprints.
-                    try {
-                        const fpResponse = await fetch('/api/fingerprints');
-                        if (!fpResponse.ok) {
-                            throw new Error(`Server responded with status: ${fpResponse.status}`);
-                        }
-                        referenceFingerprints = await fpResponse.json();
-                        console.log("Loaded audio fingerprints:", referenceFingerprints);
-                    } catch (e) { 
-                        console.error("Failed to load fingerprints:", e);
-                        messageArea.textContent = 'Error: Could not load audio fingerprints.';
-                    }
-                }
-
-                cameraSelector.addEventListener('change', (event) => loadCameraStream(event.target.value));
-                initializeApp();
+        let cameraChangeTimeout;
+        cameraSelector.addEventListener('change', (event) => {
+            if (cameraChangeTimeout) clearTimeout(cameraChangeTimeout);
+            cameraChangeTimeout = setTimeout(() => loadCameraStream(event.target.value), 100);
+        });
+        
+        initializeApp();
+        window.addEventListener('beforeunload', cleanupCurrentStream);
 
     </script>
 </body>

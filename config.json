@@ -1,14 +1,14 @@
 {
   "cameras": {
-    "iphone-13": {
-      "name": "iPhone 13",
-      "ip": "192.168.15.109",
+    "xs-max-1": {
+      "name": "xs max 1",
+      "ip": "192.168.15.113",
       "port": 8081,
       "path": "/live.flv"
     },
-    "g7-power": {
-      "name": "Moto G7 Power",
-      "ip": "192.168.15.176",
+    "xs-max-2": {
+      "name": "xs max 2",
+      "ip": "192.168.15.51",
       "port": 8081,
       "path": "/live.flv"
     }
