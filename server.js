@@ -220,28 +220,12 @@ class StreamManager extends EventEmitter {
         for (const cameraKey of this.cameraConnections.keys()) this.cleanupCameraConnection(cameraKey);
         console.log('[STREAM] All stream connections cleaned up');
     }
-
-    getStatus() {
-        const status = {
-            activeCameras: this.cameraConnections.size,
-            totalClients: 0,
-            cameras: {}
-        };
-        for (const [cameraKey, clients] of this.activeStreams.entries()) {
-            status.totalClients += clients.size;
-            status.cameras[cameraKey] = {
-                clients: clients.size,
-                connected: this.cameraConnections.has(cameraKey),
-                hasTimeout: this.connectionTimeouts.has(cameraKey)
-            };
-        }
-        return status;
-    }
 }
 
 // --- Configuration ---
 const CONFIG_PATH = './config.json';
 const FINGERPRINTS_DB_PATH = './fingerprints.json';
+const THRESHOLD_PATH = './threshold.json'; // New config file
 const RECORDINGS_DIR = path.join(__dirname, 'recordings');
 const PORT = 3000;
 
@@ -249,10 +233,7 @@ let cameraConfig, fingerprintsDb = {}, recordingProcess = null, currentRecording
 const recordingBuffer = 5;
 let streamManager;
 
-if (!fs.existsSync(RECORDINGS_DIR)) {
-    fs.mkdirSync(RECORDINGS_DIR);
-    console.log(`Created recordings directory at: ${RECORDINGS_DIR}`);
-}
+if (!fs.existsSync(RECORDINGS_DIR)) fs.mkdirSync(RECORDINGS_DIR);
 
 try {
     cameraConfig = JSON.parse(fs.readFileSync(CONFIG_PATH)).cameras;
@@ -348,7 +329,7 @@ const server = http.createServer((req, res) => {
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
     if (method === 'OPTIONS') return res.writeHead(200).end();
-    if (pathname.startsWith('/api/')) return handleApiRoutes(req, res, pathname, method, parsedUrl);
+    if (pathname.startsWith('/api/')) return handleApiRoutes(req, res, pathname, method);
     
     if (method === 'GET') {
         const staticFiles = {
@@ -378,7 +359,6 @@ function handleApiRoutes(req, res, pathname, method) {
     req.on('end', () => {
         const payload = body ? JSON.parse(body) : {};
 
-        // --- API ROUTE LOGIC ---
         if (method === 'GET' && pathname === '/api/cameras') {
             return res.writeHead(200).end(JSON.stringify(cameraConfig));
         }
@@ -396,6 +376,20 @@ function handleApiRoutes(req, res, pathname, method) {
                 return res.writeHead(200).end(JSON.stringify(videos));
             });
         }
+        // --- NEW: Threshold Endpoints ---
+        if (method === 'GET' && pathname === '/api/threshold') {
+            return fs.readFile(THRESHOLD_PATH, 'utf8', (err, data) => {
+                if (err) return res.writeHead(200).end(JSON.stringify({ threshold: 20 })); // Default value
+                return res.writeHead(200).end(data);
+            });
+        }
+        if (method === 'POST' && pathname === '/api/threshold') {
+            return fs.writeFile(THRESHOLD_PATH, JSON.stringify(payload), (err) => {
+                if (err) return res.writeHead(500).end(JSON.stringify({ error: 'Could not save threshold' }));
+                return res.writeHead(200).end(JSON.stringify({ success: true }));
+            });
+        }
+        // --- End New Endpoints ---
         if (method === 'POST' && pathname === '/api/record/start') {
             startBufferedRecording(payload.cameraKey);
             return res.writeHead(200).end(JSON.stringify({ message: 'Recording started.' }));
@@ -415,12 +409,10 @@ function handleApiRoutes(req, res, pathname, method) {
                 return res.writeHead(200).end(JSON.stringify({ success: true, name: payload.name }));
             });
         }
-        // --- NEW ENDPOINT FOR INSTANT DISCONNECT ---
         if (method === 'POST' && pathname === '/api/stream/disconnect') {
-            const { cameraKey } = payload;
-            if (cameraKey) {
-                console.log(`[API] Received explicit disconnect for camera: ${cameraKey}`);
-                streamManager.cleanupCameraConnection(cameraKey);
+            if (payload.cameraKey) {
+                console.log(`[API] Received explicit disconnect for camera: ${payload.cameraKey}`);
+                streamManager.cleanupCameraConnection(payload.cameraKey);
             }
             return res.writeHead(202).end(JSON.stringify({ message: 'Disconnect signal received.'}));
         }

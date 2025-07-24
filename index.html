@@ -20,6 +20,25 @@
         }
         .recording-indicator { background-color: #EF4444; border-radius: 50%; animation: recording-pulse 1s infinite; }
         @keyframes recording-pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+        
+        #canvasContainer {
+            height: 100px;
+            background-color: #1f2937;
+            border-radius: 0.5rem;
+            border: 1px solid #374151;
+            position: relative;
+            overflow: hidden;
+        }
+        #histogramCanvas { width: 100%; height: 100%; }
+        #thresholdLine {
+            position: absolute;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background-color: #f87171;
+            transition: bottom 0.2s ease;
+            z-index: 10;
+        }
     </style>
 </head>
 <body class="bg-gray-800 text-white flex flex-col items-center justify-center min-h-screen p-4">
@@ -44,7 +63,8 @@
                     <video id="videoElement" class="w-full h-auto" controls autoplay muted playsinline></video>
                     <div id="messageArea" class="absolute text-gray-300 font-semibold text-lg"></div>
                 </div>
-                <div class="text-center mt-4">
+                <div class="flex justify-center gap-4 mt-4">
+                    <button id="reconnectButton" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-5 rounded-md transition duration-300">Reconnect Stream</button>
                     <button id="resetMatchButton" class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-5 rounded-md transition duration-300">Reset Match</button>
                 </div>
             </div>
@@ -61,25 +81,45 @@
                 <p id="gameStateDisplay" class="text-2xl font-bold text-yellow-400 tracking-wider">WAITING FOR MATCH</p>
                 <p id="recordingInfo" class="text-sm text-gray-400 mt-2 hidden">Auto-recording enabled</p>
             </div>
-            <h2 class="text-2xl font-bold mb-4 text-center">Event Log</h2>
-            <div id="eventLog" class="bg-gray-900/50 p-4 rounded-2xl shadow-lg border border-gray-700 space-y-3 h-96 overflow-y-auto"></div>
+            
+            <div class="bg-gray-900/50 p-4 rounded-2xl shadow-lg border border-gray-700 space-y-4">
+                <h2 class="text-2xl font-bold text-center">Audio Analysis</h2>
+                <div>
+                    <label for="loudnessSlider" class="block mb-2 text-sm font-medium text-gray-300">Loudness Threshold: <span id="loudnessValue" class="font-bold text-cyan-400">20</span></label>
+                    <input id="loudnessSlider" type="range" min="0" value="20" class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+                </div>
+                <div id="canvasContainer">
+                    <canvas id="histogramCanvas"></canvas>
+                    <div id="thresholdLine"></div>
+                </div>
+                <button id="saveThresholdButton" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-md transition duration-300">Save Threshold</button>
+            </div>
+            
+            <h2 class="text-2xl font-bold mb-4 mt-6 text-center">Event Log</h2>
+            <div id="eventLog" class="bg-gray-900/50 p-4 rounded-2xl shadow-lg border border-gray-700 space-y-3 h-64 overflow-y-auto"></div>
         </div>
     </div>
 
     <script type="text/javascript">
-        // Use 'let' for videoElement since it will be reassigned
         let videoElement = document.getElementById('videoElement');
-        const videoContainer = document.getElementById('videoContainer'); // Get container reference
+        const videoContainer = document.getElementById('videoContainer');
         const messageArea = document.getElementById('messageArea');
         const cameraSelector = document.getElementById('cameraSelector');
         const gameStateDisplay = document.getElementById('gameStateDisplay');
         const eventLog = document.getElementById('eventLog');
         const resetMatchButton = document.getElementById('resetMatchButton');
+        const reconnectButton = document.getElementById('reconnectButton');
         const listeningIndicator = document.getElementById('listeningIndicator');
         const recordingStatus = document.getElementById('recordingStatus');
         const recordingInfo = document.getElementById('recordingInfo');
         const manualRecordButton = document.getElementById('manualRecordButton');
         const manualStopButton = document.getElementById('manualStopButton');
+        const loudnessSlider = document.getElementById('loudnessSlider');
+        const loudnessValue = document.getElementById('loudnessValue');
+        const canvas = document.getElementById('histogramCanvas');
+        const canvasCtx = canvas.getContext('2d');
+        const thresholdLine = document.getElementById('thresholdLine');
+        const saveThresholdButton = document.getElementById('saveThresholdButton');
 
         let player, audioContext, analyzer, sourceNode;
         let referenceFingerprints = {};
@@ -89,7 +129,12 @@
         let streamReconnectAttempts = 0;
         let isStreamSwitching = false;
         let cleanupInProgress = false;
-
+        let loudnessHistory = [];
+        
+        // --- UPDATED CONSTANTS ---
+        const LOUDNESS_HISTORY_LENGTH = 50;
+        const MAX_LOUDNESS = 100; // New maximum value
+        
         const MAX_RECONNECT_ATTEMPTS = 3;
         const MATCH_STATES = { WAITING: 'WAITING FOR MATCH', AUTO: 'WAITING FOR AUTO END', TELEOP: 'WAITING FOR GAME END' };
         let currentMatchState = MATCH_STATES.WAITING;
@@ -148,6 +193,16 @@
             sendMatchEvent('MATCH_ABORT');
             if (matchTimeoutId) clearTimeout(matchTimeoutId);
             matchTimeoutId = null;
+        });
+
+        reconnectButton.addEventListener('click', () => {
+            if (currentCameraKey) {
+                console.log(`[CLIENT] Manual reconnect triggered for ${currentCameraKey}`);
+                messageArea.textContent = `Reconnecting to ${currentCameraKey}...`;
+                loadCameraStream(currentCameraKey);
+            } else {
+                messageArea.textContent = 'Select a camera to connect.';
+            }
         });
 
         const handleRecordingAction = async (action) => {
@@ -221,16 +276,25 @@
         }
 
         async function initializeApp() {
+            canvas.width = canvas.clientWidth;
+            canvas.height = canvas.clientHeight;
+            // Set slider max value from our constant
+            loudnessSlider.max = MAX_LOUDNESS;
+
             updateGameStateDisplay();
             videoElement.style.display = 'none';
             cameraSelector.innerHTML = '<option value="">Loading...</option>';
             cameraSelector.disabled = true;
             try {
-                const [cameras, fingerprints] = await Promise.all([
+                const [cameras, fingerprints, thresholdData] = await Promise.all([
                     fetch('/api/cameras').then(res => res.json()),
-                    fetch('/api/fingerprints').then(res => res.json())
+                    fetch('/api/fingerprints').then(res => res.json()),
+                    fetch('/api/threshold').then(res => res.json())
                 ]);
                 referenceFingerprints = fingerprints;
+                loudnessSlider.value = thresholdData.threshold;
+                loudnessValue.textContent = thresholdData.threshold;
+                updateThresholdLine();
                 cameraSelector.innerHTML = '<option value="" disabled selected>-- Select a Camera --</option>';
                 for (const key in cameras) {
                     const option = document.createElement('option');
@@ -246,34 +310,20 @@
             }
         }
 
-        // --- UPDATED FUNCTION TO FIX AudioContext ERROR ---
         function cleanupCurrentStream() {
             if (cleanupInProgress) return;
             cleanupInProgress = true;
             console.log('[CLIENT] Cleaning up current stream');
-            
             if (currentCameraKey && navigator.sendBeacon) {
-                const headers = { type: 'application/json' };
-                const blob = new Blob([JSON.stringify({ cameraKey: currentCameraKey })], headers);
-                navigator.sendBeacon('/api/stream/disconnect', blob);
-                console.log(`[CLIENT] Sent disconnect beacon for ${currentCameraKey}`);
+                navigator.sendBeacon('/api/stream/disconnect', new Blob([JSON.stringify({ cameraKey: currentCameraKey })], {type: 'application/json'}));
             }
-
             try {
-                // Destroy all audio resources
                 if (analyzer) analyzer.stop();
                 if (sourceNode) sourceNode.disconnect();
                 if (audioContext && audioContext.state !== 'closed') audioContext.close();
+                if (player) player.destroy();
+                if (videoElement) videoElement.remove();
                 
-                // Destroy video player
-                if (player) {
-                    player.destroy();
-                }
-
-                // **NEW:** Destroy the video element and create a new one
-                if (videoElement) {
-                    videoElement.remove(); // Remove old element from DOM
-                }
                 const newVideoElement = document.createElement('video');
                 newVideoElement.id = 'videoElement';
                 newVideoElement.className = 'w-full h-auto';
@@ -281,11 +331,8 @@
                 newVideoElement.autoplay = true;
                 newVideoElement.muted = true;
                 newVideoElement.playsinline = true;
-                videoContainer.prepend(newVideoElement); // Add new element to container
-                
-                // **NEW:** Update the global reference to point to the new element
+                videoContainer.prepend(newVideoElement);
                 videoElement = newVideoElement;
-
             } catch (error) {
                 console.error('[CLIENT] Error during local cleanup:', error);
             } finally {
@@ -319,7 +366,7 @@
                 });
                 player.on(mpegts.Events.ERROR, (type, details) => handleStreamError('MediaError', details));
                 player.on(mpegts.Events.MEDIA_INFO, handleMediaInfo);
-                player.attachMediaElement(videoElement); // Attach to the new videoElement
+                player.attachMediaElement(videoElement);
                 player.load();
                 player.play().catch(err => handleStreamError('PLAY_ERROR', err));
             } catch (error) {
@@ -347,6 +394,8 @@
         function handleMediaInfo(mediaInfo) {
             console.log('[CLIENT] Media info received:', mediaInfo);
             messageArea.textContent = "";
+            videoElement.muted = false;
+            videoElement.volume = 0.5;
             if (Object.keys(referenceFingerprints).length > 0 && !analyzer) {
                 setTimeout(() => {
                     if (videoElement && !videoElement.paused) startAnalysis();
@@ -361,7 +410,6 @@
                 }
                 if (audioContext.state === 'suspended') audioContext.resume();
                 
-                // This should now always work with a fresh videoElement
                 sourceNode = audioContext.createMediaElementSource(videoElement);
                 sourceNode.connect(audioContext.destination);
                 
@@ -369,8 +417,15 @@
                     audioContext, source: sourceNode, bufferSize: 512,
                     featureExtractors: ["mfcc", "loudness"],
                     callback: features => {
-                        if (features?.loudness?.total > 20) {
-                            compareAndFindMatch(features.mfcc);
+                        if (features?.loudness?.total) {
+                            loudnessHistory.push(features.loudness.total);
+                            if (loudnessHistory.length > LOUDNESS_HISTORY_LENGTH) {
+                                loudnessHistory.shift();
+                            }
+                            drawHistogram();
+                            if (features.loudness.total > parseFloat(loudnessSlider.value)) {
+                                compareAndFindMatch(features.mfcc);
+                            }
                         }
                     }
                 });
@@ -380,6 +435,64 @@
                 console.error('[CLIENT] Error starting audio analysis:', error);
             }
         }
+
+        function drawHistogram() {
+            const w = canvas.width;
+            const h = canvas.height;
+            // Use the constant for scaling
+            const maxLoudness = MAX_LOUDNESS; 
+            
+            canvasCtx.clearRect(0, 0, w, h);
+            canvasCtx.beginPath();
+            canvasCtx.strokeStyle = '#38bdf8';
+            canvasCtx.lineWidth = 2.5;
+            canvasCtx.lineJoin = 'round';
+
+            const step = w / (LOUDNESS_HISTORY_LENGTH - 1);
+            
+            let firstLoudness = loudnessHistory[0] || 0;
+            let firstY = h - Math.min(h, (firstLoudness / maxLoudness) * h);
+            canvasCtx.moveTo(0, firstY);
+
+            for (let i = 1; i < loudnessHistory.length; i++) {
+                const loudness = loudnessHistory[i] || 0;
+                const x = i * step;
+                const y = h - Math.min(h, (loudness / maxLoudness) * h);
+                canvasCtx.lineTo(x, y);
+            }
+            canvasCtx.stroke();
+        }
+
+        function updateThresholdLine() {
+            // Use the constant for scaling
+            const maxLoudness = MAX_LOUDNESS;
+            const threshold = parseFloat(loudnessSlider.value);
+            const percent = (threshold / maxLoudness) * 100;
+            thresholdLine.style.bottom = `${percent}%`;
+        }
+
+        loudnessSlider.addEventListener('input', () => {
+            loudnessValue.textContent = loudnessSlider.value;
+            updateThresholdLine();
+        });
+
+        saveThresholdButton.addEventListener('click', async () => {
+            const threshold = loudnessSlider.value;
+            saveThresholdButton.textContent = 'Saving...';
+            try {
+                await fetch('/api/threshold', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ threshold })
+                });
+                saveThresholdButton.textContent = 'Saved!';
+            } catch (error) {
+                console.error('Failed to save threshold:', error);
+                saveThresholdButton.textContent = 'Error!';
+            } finally {
+                setTimeout(() => { saveThresholdButton.textContent = 'Save Threshold'; }, 2000);
+            }
+        });
 
         let cameraChangeTimeout;
         cameraSelector.addEventListener('change', (event) => {
