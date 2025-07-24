@@ -67,7 +67,9 @@
     </div>
 
     <script type="text/javascript">
-        const videoElement = document.getElementById('videoElement');
+        // Use 'let' for videoElement since it will be reassigned
+        let videoElement = document.getElementById('videoElement');
+        const videoContainer = document.getElementById('videoContainer'); // Get container reference
         const messageArea = document.getElementById('messageArea');
         const cameraSelector = document.getElementById('cameraSelector');
         const gameStateDisplay = document.getElementById('gameStateDisplay');
@@ -244,13 +246,12 @@
             }
         }
 
-        // --- MODIFIED FUNCTION ---
+        // --- UPDATED FUNCTION TO FIX AudioContext ERROR ---
         function cleanupCurrentStream() {
             if (cleanupInProgress) return;
             cleanupInProgress = true;
             console.log('[CLIENT] Cleaning up current stream');
             
-            // **NEW:** Explicitly tell the server to disconnect this camera stream
             if (currentCameraKey && navigator.sendBeacon) {
                 const headers = { type: 'application/json' };
                 const blob = new Blob([JSON.stringify({ cameraKey: currentCameraKey })], headers);
@@ -259,19 +260,32 @@
             }
 
             try {
+                // Destroy all audio resources
                 if (analyzer) analyzer.stop();
                 if (sourceNode) sourceNode.disconnect();
                 if (audioContext && audioContext.state !== 'closed') audioContext.close();
+                
+                // Destroy video player
                 if (player) {
-                    if (videoElement && !videoElement.paused) videoElement.pause();
-                    player.unload();
-                    player.detachMediaElement();
                     player.destroy();
                 }
+
+                // **NEW:** Destroy the video element and create a new one
                 if (videoElement) {
-                    videoElement.removeAttribute('src');
-                    videoElement.load();
+                    videoElement.remove(); // Remove old element from DOM
                 }
+                const newVideoElement = document.createElement('video');
+                newVideoElement.id = 'videoElement';
+                newVideoElement.className = 'w-full h-auto';
+                newVideoElement.controls = true;
+                newVideoElement.autoplay = true;
+                newVideoElement.muted = true;
+                newVideoElement.playsinline = true;
+                videoContainer.prepend(newVideoElement); // Add new element to container
+                
+                // **NEW:** Update the global reference to point to the new element
+                videoElement = newVideoElement;
+
             } catch (error) {
                 console.error('[CLIENT] Error during local cleanup:', error);
             } finally {
@@ -291,7 +305,7 @@
                 currentCameraKey = cameraKey;
                 attemptStreamConnection(cameraKey);
                 isStreamSwitching = false;
-            }, 250); // Slightly increased delay for smoother transition
+            }, 250);
         }
 
         function attemptStreamConnection(cameraKey) {
@@ -305,7 +319,7 @@
                 });
                 player.on(mpegts.Events.ERROR, (type, details) => handleStreamError('MediaError', details));
                 player.on(mpegts.Events.MEDIA_INFO, handleMediaInfo);
-                player.attachMediaElement(videoElement);
+                player.attachMediaElement(videoElement); // Attach to the new videoElement
                 player.load();
                 player.play().catch(err => handleStreamError('PLAY_ERROR', err));
             } catch (error) {
@@ -342,17 +356,20 @@
 
         function startAnalysis() {
             try {
-                if (!audioContext || audioContext.state === 'closed') audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                if (audioContext.state === 'suspended') audioContext.resume();
-                if (!sourceNode) {
-                    sourceNode = audioContext.createMediaElementSource(videoElement);
-                    sourceNode.connect(audioContext.destination);
+                if (!audioContext || audioContext.state === 'closed') {
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
                 }
+                if (audioContext.state === 'suspended') audioContext.resume();
+                
+                // This should now always work with a fresh videoElement
+                sourceNode = audioContext.createMediaElementSource(videoElement);
+                sourceNode.connect(audioContext.destination);
+                
                 analyzer = Meyda.createMeydaAnalyzer({
                     audioContext, source: sourceNode, bufferSize: 512,
                     featureExtractors: ["mfcc", "loudness"],
                     callback: features => {
-                        if (features && features.loudness && features.loudness.total > 20) {
+                        if (features?.loudness?.total > 20) {
                             compareAndFindMatch(features.mfcc);
                         }
                     }
