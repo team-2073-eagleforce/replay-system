@@ -342,17 +342,19 @@
                 }
                 
                 analyzer = Meyda.createMeydaAnalyzer({
-                    audioContext, source: sourceNode, bufferSize: 512,
+                    audioContext,
+                    source: sourceNode,
+                    bufferSize: 512,
                     featureExtractors: ["mfcc", "loudness"],
                     callback: features => {
-                        // Always process loudness for the UI visualizer
+                        // Update histogram with loudness for UI only
                         if (features?.loudness?.total) {
                             loudnessHistory.push(features.loudness.total);
                             if (loudnessHistory.length > LOUDNESS_HISTORY_LENGTH) loudnessHistory.shift();
                             drawHistogram();
                         }
-                        // Always attempt to match fingerprint if we are in the waiting state.
-                        // The loudness check is removed from here to ensure constant analysis.
+
+                        // Match start ONLY on MFCC, not on loudness
                         if (currentMatchState === MATCH_STATES.WAITING && features?.mfcc) {
                             compareAndFindMatch(features.mfcc);
                         }
@@ -370,13 +372,12 @@
             if (Date.now() - lastMatchTime < 5000) return; 
 
             let bestMatch = { name: null, distance: Infinity };
-            const MATCH_THRESHOLD = 45; // Lower is a stricter match
-            
+            const MATCH_THRESHOLD = 20; // Lower value = stricter match (try 20 or lower)
+
             for (const name in referenceFingerprints) {
-                // Only check against fingerprints designated for starting a match
                 if (name.toLowerCase().includes('start')) {
                     const refMfcc = referenceFingerprints[name];
-                    // Using Euclidean distance to compare fingerprints
+                    // Use Euclidean distance
                     let distance = Math.sqrt(refMfcc.reduce((sum, val, i) => sum + Math.pow(val - liveMfcc[i], 2), 0));
                     if (distance < bestMatch.distance) {
                         bestMatch = { distance, name };
@@ -384,7 +385,7 @@
                 }
             }
 
-            // If a close enough match is found
+            // Trigger only if a close enough match is found
             if (bestMatch.distance < MATCH_THRESHOLD) {
                 lastMatchTime = Date.now();
                 logEvent(`Match Start Detected (${bestMatch.name})`, bestMatch.distance);
