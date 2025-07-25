@@ -3,13 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>IP Camera Live Viewer & Event Detector</title>
+    <title>Multi-Camera Live Viewer & Event Recorder</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/mpegts.js/dist/mpegts.js"></script>
     <script src="https://unpkg.com/meyda@5.3.0/dist/web/meyda.min.js"></script>
     <style>
         body { font-family: 'Inter', sans-serif; }
-        #videoContainer { min-height: 480px; }
+        .video-container { min-height: 240px; }
         .event-log-item { animation: fadeIn 0.5s ease-in-out; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
         .listening-indicator span { height: 10px; width: 10px; background-color: #34D399; border-radius: 50%; display: inline-block; animation: pulse 1.5s infinite; }
@@ -20,7 +20,7 @@
         }
         .recording-indicator { background-color: #EF4444; border-radius: 50%; animation: recording-pulse 1s infinite; }
         @keyframes recording-pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
-        
+        .audio-source-active svg { fill: #34D399; }
         #canvasContainer {
             height: 100px;
             background-color: #1f2937;
@@ -39,38 +39,42 @@
             transition: bottom 0.2s ease;
             z-index: 10;
         }
+        .video-wrapper {
+            position: relative;
+            width: 100%;
+            height: 100%;
+        }
+        .message-area {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: rgba(0,0,0,0.5);
+            padding: 8px 16px;
+            border-radius: 8px;
+            color: white;
+            font-weight: bold;
+            z-index: 10;
+        }
     </style>
 </head>
-<body class="bg-gray-800 text-white flex flex-col items-center justify-center min-h-screen p-4">
+<body class="bg-gray-800 text-white flex flex-col min-h-screen p-4">
 
-    <div class="w-full max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6">
+    <div class="w-full max-w-screen-xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div class="lg:col-span-2">
-            <h1 class="text-3xl font-bold mb-2 text-center">Live Viewer</h1>
-            <p class="text-gray-400 mb-6 text-center">Select a camera to begin streaming and audio analysis.</p>
-            <div class="bg-gray-900/50 backdrop-blur-sm p-6 rounded-2xl shadow-2xl border border-gray-700">
-                <div class="mb-4 flex flex-col md:flex-row items-center justify-between gap-4">
-                    <select id="cameraSelector" class="flex-1 max-w-md p-3 text-center bg-gray-800 border border-gray-600 text-white rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition"></select>
-                    <div class="flex items-center gap-4">
-                        <div id="recordingStatus" class="hidden items-center gap-2">
-                            <span class="recording-indicator w-3 h-3"></span>
-                            <span class="text-red-400 font-semibold">RECORDING</span>
-                        </div>
-                        <button id="manualRecordButton" class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-md transition duration-300">Start Recording</button>
-                        <button id="manualStopButton" class="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-md transition duration-300">Stop Recording</button>
-                    </div>
-                </div>
-                <div id="videoContainer" class="bg-black rounded-lg shadow-inner overflow-hidden relative flex items-center justify-center">
-                    <video id="videoElement" class="w-full h-auto" controls autoplay muted playsinline></video>
-                    <div id="messageArea" class="absolute text-gray-300 font-semibold text-lg"></div>
-                </div>
-                <div class="flex justify-center gap-4 mt-4">
-                    <button id="reconnectButton" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-5 rounded-md transition duration-300">Reconnect Stream</button>
-                    <button id="resetMatchButton" class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-5 rounded-md transition duration-300">Reset Match</button>
-                </div>
+            <div class="flex justify-between items-center mb-4">
+                 <h1 class="text-3xl font-bold text-center">Live Streams</h1>
+                 <div class="flex items-center gap-4">
+                    <label for="gridSlider" class="text-sm">Grid Columns:</label>
+                    <input type="range" id="gridSlider" min="1" max="3" value="2" class="w-32">
+                 </div>
             </div>
+            <div id="videoGrid" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                </div>
         </div>
+
         <div class="lg:col-span-1">
-            <div class="flex items-center justify-center mb-2">
+             <div class="flex items-center justify-center mb-2">
                 <h2 class="text-2xl font-bold text-center">Game State</h2>
                 <div id="listeningIndicator" class="ml-4 items-center hidden">
                     <span class="listening-indicator"><span></span></span>
@@ -79,212 +83,84 @@
             </div>
             <div class="mb-4 p-4 bg-gray-900 rounded-lg shadow-lg text-center">
                 <p id="gameStateDisplay" class="text-2xl font-bold text-yellow-400 tracking-wider">WAITING FOR MATCH</p>
-                <p id="recordingInfo" class="text-sm text-gray-400 mt-2 hidden">Auto-recording enabled</p>
+                <p id="matchTimerDisplay" class="text-lg text-gray-300 mt-1 h-6"></p>
             </div>
-            
+
             <div class="bg-gray-900/50 p-4 rounded-2xl shadow-lg border border-gray-700 space-y-4">
+                <h2 class="text-2xl font-bold text-center">Recording Controls</h2>
+                 <div class="flex items-center justify-center gap-2">
+                    <div id="recordingStatus" class="hidden items-center gap-2">
+                        <span class="recording-indicator w-3 h-3"></span>
+                        <span class="text-red-400 font-semibold">RECORDING</span>
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <button id="manualRecordButton" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-md transition duration-300">Manual Start</button>
+                    <button id="manualStopButton" class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-md transition duration-300">Manual Stop</button>
+                </div>
+                 <button id="resetMatchButton" class="w-full bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-2 px-5 rounded-md transition duration-300">Reset Match</button>
+            </div>
+
+            <div class="bg-gray-900/50 p-4 rounded-2xl shadow-lg border border-gray-700 space-y-4 mt-6">
                 <h2 class="text-2xl font-bold text-center">Audio Analysis</h2>
                 <div>
+                    <label for="volumeSlider" class="block mb-2 text-sm font-medium text-gray-300">Global Volume: <span id="volumeValue">50</span>%</label>
+                    <input id="volumeSlider" type="range" min="0" max="100" value="50" class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+                </div>
+                <div>
                     <label for="loudnessSlider" class="block mb-2 text-sm font-medium text-gray-300">Loudness Threshold: <span id="loudnessValue" class="font-bold text-cyan-400">20</span></label>
-                    <input id="loudnessSlider" type="range" min="0" value="20" class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+                    <input id="loudnessSlider" type="range" min="0" max="100" value="20" class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer">
                 </div>
                 <div id="canvasContainer">
                     <canvas id="histogramCanvas"></canvas>
                     <div id="thresholdLine"></div>
                 </div>
-                <button id="saveThresholdButton" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-md transition duration-300">Save Threshold</button>
+                <button id="saveThresholdButton" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-md transition duration-300">Save Threshold</button>
             </div>
-            
+
             <h2 class="text-2xl font-bold mb-4 mt-6 text-center">Event Log</h2>
             <div id="eventLog" class="bg-gray-900/50 p-4 rounded-2xl shadow-lg border border-gray-700 space-y-3 h-64 overflow-y-auto"></div>
         </div>
     </div>
 
     <script type="text/javascript">
-        let videoElement = document.getElementById('videoElement');
-        const videoContainer = document.getElementById('videoContainer');
-        const messageArea = document.getElementById('messageArea');
-        const cameraSelector = document.getElementById('cameraSelector');
+        const videoGrid = document.getElementById('videoGrid');
         const gameStateDisplay = document.getElementById('gameStateDisplay');
+        const matchTimerDisplay = document.getElementById('matchTimerDisplay');
         const eventLog = document.getElementById('eventLog');
-        const resetMatchButton = document.getElementById('resetMatchButton');
-        const reconnectButton = document.getElementById('reconnectButton');
         const listeningIndicator = document.getElementById('listeningIndicator');
         const recordingStatus = document.getElementById('recordingStatus');
-        const recordingInfo = document.getElementById('recordingInfo');
         const manualRecordButton = document.getElementById('manualRecordButton');
         const manualStopButton = document.getElementById('manualStopButton');
+        const resetMatchButton = document.getElementById('resetMatchButton');
         const loudnessSlider = document.getElementById('loudnessSlider');
         const loudnessValue = document.getElementById('loudnessValue');
+        const volumeSlider = document.getElementById('volumeSlider');
+        const volumeValue = document.getElementById('volumeValue');
+        const gridSlider = document.getElementById('gridSlider');
         const canvas = document.getElementById('histogramCanvas');
         const canvasCtx = canvas.getContext('2d');
         const thresholdLine = document.getElementById('thresholdLine');
         const saveThresholdButton = document.getElementById('saveThresholdButton');
 
-        let player, audioContext, analyzer, sourceNode;
+        let players = new Map();
+        let audioSources = new Map();
         let referenceFingerprints = {};
-        let matchTimeoutId = null;
-        let currentCameraKey = null;
-        let isRecording = false;
-        let streamReconnectAttempts = 0;
-        let isStreamSwitching = false;
-        let cleanupInProgress = false;
+        let matchTimerInterval = null;
+        let audioContext, analyzer, activeAudioSourceKey = null;
         let loudnessHistory = [];
+        let lastMatchTime = 0;
         
-        // --- UPDATED CONSTANTS ---
         const LOUDNESS_HISTORY_LENGTH = 50;
-        const MAX_LOUDNESS = 100; // New maximum value
-        
-        const MAX_RECONNECT_ATTEMPTS = 3;
-        const MATCH_STATES = { WAITING: 'WAITING FOR MATCH', AUTO: 'WAITING FOR AUTO END', TELEOP: 'WAITING FOR GAME END' };
+        const MAX_LOUDNESS = 100;
+        const MATCH_DURATION = 155 * 1000;
+        const MATCH_STATES = { WAITING: 'WAITING FOR MATCH', RECORDING: 'RECORDING MATCH' };
         let currentMatchState = MATCH_STATES.WAITING;
-        
-        setInterval(checkRecordingStatus, 1000);
-
-        async function checkRecordingStatus() {
-            try {
-                const status = await (await fetch('/api/recording-status')).json();
-                if (status.isRecording !== isRecording) {
-                    isRecording = status.isRecording;
-                    updateRecordingUI();
-                }
-            } catch (error) {
-                console.error('Failed to check recording status:', error);
-            }
-        }
-
-        function updateRecordingUI() {
-            const isRec = isRecording;
-            recordingStatus.classList.toggle('hidden', !isRec);
-            recordingStatus.classList.toggle('flex', isRec);
-            recordingInfo.classList.toggle('hidden', !isRec);
-            manualRecordButton.disabled = isRec;
-            manualStopButton.disabled = !isRec;
-            manualRecordButton.className = isRec ? 'bg-gray-600 text-white font-bold py-2 px-4 rounded-md cursor-not-allowed' : 'bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-md transition duration-300';
-            manualStopButton.className = !isRec ? 'bg-gray-600 text-white font-bold py-2 px-4 rounded-md cursor-not-allowed' : 'bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-md transition duration-300';
-        }
-
-        function sendMatchEvent(eventType) {
-            fetch('/api/match-event', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ eventType, cameraKey: currentCameraKey })
-            }).catch(err => console.error('Error sending match event:', err));
-        }
-
-        function updateGameStateDisplay() {
-            gameStateDisplay.textContent = currentMatchState;
-        }
-
-        function logEvent(name, confidence) {
-            const now = new Date();
-            const timestamp = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
-            const eventItem = document.createElement('div');
-            eventItem.className = 'bg-gray-800 p-3 rounded-lg event-log-item';
-            eventItem.innerHTML = `<div class="flex justify-between items-center"><span class="font-bold text-lg text-cyan-400">${name}</span><span class="text-xs text-gray-400">${timestamp}</span></div><div class="text-sm text-gray-300">Confidence (dist): ${confidence.toFixed(2)}</div>`;
-            eventLog.prepend(eventItem);
-        }
-        
-        resetMatchButton.addEventListener('click', () => {
-            currentMatchState = MATCH_STATES.WAITING;
-            updateGameStateDisplay();
-            eventLog.innerHTML = '';
-            console.log("Match state reset by user.");
-            sendMatchEvent('MATCH_ABORT');
-            if (matchTimeoutId) clearTimeout(matchTimeoutId);
-            matchTimeoutId = null;
-        });
-
-        reconnectButton.addEventListener('click', () => {
-            if (currentCameraKey) {
-                console.log(`[CLIENT] Manual reconnect triggered for ${currentCameraKey}`);
-                messageArea.textContent = `Reconnecting to ${currentCameraKey}...`;
-                loadCameraStream(currentCameraKey);
-            } else {
-                messageArea.textContent = 'Select a camera to connect.';
-            }
-        });
-
-        const handleRecordingAction = async (action) => {
-            const cameraKey = cameraSelector.value;
-            if (!cameraKey && action === 'start') return messageArea.textContent = 'Please select a camera.';
-            messageArea.textContent = action === 'start' ? 'Starting recording...' : 'Stopping recording...';
-            try {
-                const response = await fetch(`/api/record/${action}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ cameraKey })
-                });
-                const result = await response.json();
-                messageArea.textContent = result.message;
-            } catch (error) {
-                messageArea.textContent = `Error: ${error.message}`;
-            }
-        };
-
-        manualRecordButton.addEventListener('click', () => handleRecordingAction('start'));
-        manualStopButton.addEventListener('click', () => handleRecordingAction('stop'));
-
-        function compareAndFindMatch(liveMfcc) {
-            let bestMatch = { name: null, distance: Infinity };
-            const MATCH_THRESHOLD = 45;
-            for (const name in referenceFingerprints) {
-                const refMfcc = referenceFingerprints[name];
-                let distance = Math.sqrt(refMfcc.reduce((sum, val, i) => sum + Math.pow(val - liveMfcc[i], 2), 0));
-                if (distance < bestMatch.distance) {
-                    bestMatch = { distance, name };
-                }
-            }
-            if (bestMatch.distance < MATCH_THRESHOLD) {
-                if (currentMatchState === MATCH_STATES.WAITING && bestMatch.name.toLowerCase().includes('start')) {
-                    logEvent("Match Start", bestMatch.distance);
-                    currentMatchState = MATCH_STATES.AUTO;
-                    sendMatchEvent('MATCH_START');
-                    if (matchTimeoutId) clearTimeout(matchTimeoutId);
-                    matchTimeoutId = setTimeout(() => {
-                        console.log("Match timer expired. Forcing end.");
-                        logEvent("Forced End (Timeout)", 0);
-                        currentMatchState = MATCH_STATES.WAITING;
-                        updateGameStateDisplay();
-                        sendMatchEvent('MATCH_END');
-                    }, 3 * 60 * 1000);
-                } else if (currentMatchState === MATCH_STATES.AUTO && bestMatch.name.toLowerCase().includes('end')) {
-                    logEvent("Auto End", bestMatch.distance);
-                    currentMatchState = MATCH_STATES.TELEOP;
-                } else if (currentMatchState === MATCH_STATES.TELEOP && bestMatch.name.toLowerCase().includes('end')) {
-                    logEvent("Game End", bestMatch.distance);
-                    currentMatchState = MATCH_STATES.WAITING;
-                    sendMatchEvent('MATCH_END');
-                    if (matchTimeoutId) clearTimeout(matchTimeoutId);
-                    matchTimeoutId = null;
-                }
-                updateGameStateDisplay();
-                stopAnalysis(3000); 
-            }
-        }
-        
-        function stopAnalysis(duration) {
-            if (!analyzer) return;
-            analyzer.stop();
-            listeningIndicator.classList.add('hidden');
-            setTimeout(() => {
-                if (analyzer) {
-                    analyzer.start();
-                    listeningIndicator.classList.remove('hidden');
-                }
-            }, duration);
-        }
 
         async function initializeApp() {
             canvas.width = canvas.clientWidth;
             canvas.height = canvas.clientHeight;
-            // Set slider max value from our constant
-            loudnessSlider.max = MAX_LOUDNESS;
-
             updateGameStateDisplay();
-            videoElement.style.display = 'none';
-            cameraSelector.innerHTML = '<option value="">Loading...</option>';
-            cameraSelector.disabled = true;
             try {
                 const [cameras, fingerprints, thresholdData] = await Promise.all([
                     fetch('/api/cameras').then(res => res.json()),
@@ -295,181 +171,340 @@
                 loudnessSlider.value = thresholdData.threshold;
                 loudnessValue.textContent = thresholdData.threshold;
                 updateThresholdLine();
-                cameraSelector.innerHTML = '<option value="" disabled selected>-- Select a Camera --</option>';
                 for (const key in cameras) {
-                    const option = document.createElement('option');
-                    option.value = key;
-                    option.textContent = cameras[key].name;
-                    cameraSelector.appendChild(option);
+                    addCameraStream(key, cameras[key]);
                 }
-                cameraSelector.disabled = false;
             } catch (error) {
                 console.error("Initialization failed:", error);
-                messageArea.textContent = `Error: ${error.message}`;
-                cameraSelector.innerHTML = '<option value="">Could not load</option>';
             }
         }
 
-        function cleanupCurrentStream() {
-            if (cleanupInProgress) return;
-            cleanupInProgress = true;
-            console.log('[CLIENT] Cleaning up current stream');
-            if (currentCameraKey && navigator.sendBeacon) {
-                navigator.sendBeacon('/api/stream/disconnect', new Blob([JSON.stringify({ cameraKey: currentCameraKey })], {type: 'application/json'}));
-            }
-            try {
-                if (analyzer) analyzer.stop();
-                if (sourceNode) sourceNode.disconnect();
-                if (audioContext && audioContext.state !== 'closed') audioContext.close();
-                if (player) player.destroy();
-                if (videoElement) videoElement.remove();
-                
-                const newVideoElement = document.createElement('video');
-                newVideoElement.id = 'videoElement';
-                newVideoElement.className = 'w-full h-auto';
-                newVideoElement.controls = true;
-                newVideoElement.autoplay = true;
-                newVideoElement.muted = true;
-                newVideoElement.playsinline = true;
-                videoContainer.prepend(newVideoElement);
-                videoElement = newVideoElement;
-            } catch (error) {
-                console.error('[CLIENT] Error during local cleanup:', error);
-            } finally {
-                [player, audioContext, analyzer, sourceNode, currentCameraKey] = [null, null, null, null, null];
-                listeningIndicator.classList.add('hidden');
-                streamReconnectAttempts = 0;
-                cleanupInProgress = false;
-            }
-        }
+        function addCameraStream(cameraKey, cameraConfig) {
+            if (players.has(cameraKey)) return;
 
-        function loadCameraStream(cameraKey) {
-            if (!cameraKey || isStreamSwitching) return;
-            isStreamSwitching = true;
-            console.log(`[CLIENT] Loading camera stream: ${cameraKey}`);
-            cleanupCurrentStream();
-            setTimeout(() => {
-                currentCameraKey = cameraKey;
-                attemptStreamConnection(cameraKey);
-                isStreamSwitching = false;
-            }, 250);
+            const container = document.createElement('div');
+            container.id = `container-${cameraKey}`;
+            container.className = 'video-container bg-black rounded-lg shadow-inner overflow-hidden relative flex flex-col';
+            
+            const header = document.createElement('div');
+            header.className = 'p-2 bg-gray-700/50 flex items-center justify-between';
+            header.innerHTML = `
+                <span class="font-bold">${cameraConfig.name}</span>
+                <div class="flex items-center">
+                    <button class="mic-button p-1" data-key="${cameraKey}" title="Set as audio source">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-white" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm5 3a1 1 0 00-2 0v1a1 1 0 102 0V7zM5 8a1 1 0 011-1h1a1 1 0 110 2H6a1 1 0 01-1-1zm1 3a1 1 0 100 2h8a1 1 0 100-2H6z" clip-rule="evenodd" /></svg>
+                    </button>
+                    <button class="remove-button text-red-500 font-bold ml-2 px-2" data-key="${cameraKey}" title="Remove camera">X</button>
+                </div>
+            `;
+            
+            const videoWrapper = document.createElement('div');
+            videoWrapper.className = 'video-wrapper flex-grow';
+
+            const videoElement = document.createElement('video');
+            videoElement.id = `video-${cameraKey}`;
+            videoElement.className = 'w-full h-full object-cover';
+            videoElement.autoplay = true;
+            videoElement.muted = true;
+            videoElement.playsinline = true;
+
+            const messageArea = document.createElement('div');
+            messageArea.id = `message-${cameraKey}`;
+            messageArea.className = 'message-area hidden';
+
+            videoWrapper.appendChild(videoElement);
+            videoWrapper.appendChild(messageArea);
+            container.appendChild(header);
+            container.appendChild(videoWrapper);
+            videoGrid.appendChild(container);
+
+            header.querySelector('.remove-button').onclick = () => removeCamera(cameraKey);
+            header.querySelector('.mic-button').onclick = () => setAudioSource(cameraKey);
+
+            const playerState = {
+                player: null,
+                videoElement,
+                container,
+                messageArea,
+                reconnectAttempts: 0,
+                maxReconnectAttempts: 5
+            };
+            players.set(cameraKey, playerState);
+            
+            attemptStreamConnection(cameraKey);
+
+            if (!activeAudioSourceKey) {
+                setAudioSource(cameraKey);
+            }
         }
 
         function attemptStreamConnection(cameraKey) {
-            if (!cameraKey || cameraKey !== currentCameraKey) return;
-            messageArea.textContent = `Connecting to ${cameraKey}...`;
-            videoElement.style.display = 'block';
-            try {
-                player = mpegts.createPlayer({
-                    type: 'flv', isLive: true, url: `/stream?camera=${cameraKey}`,
-                    cors: true, hasAudio: true, hasVideo: true
-                });
-                player.on(mpegts.Events.ERROR, (type, details) => handleStreamError('MediaError', details));
-                player.on(mpegts.Events.MEDIA_INFO, handleMediaInfo);
-                player.attachMediaElement(videoElement);
-                player.load();
-                player.play().catch(err => handleStreamError('PLAY_ERROR', err));
-            } catch (error) {
-                handleStreamError('CREATION_ERROR', error);
+            const state = players.get(cameraKey);
+            if (!state) return;
+
+            state.messageArea.textContent = 'Connecting...';
+            state.messageArea.classList.remove('hidden');
+
+            if (state.player) {
+                state.player.destroy();
+            }
+
+            state.player = mpegts.createPlayer({
+                type: 'flv', isLive: true, url: `/stream?camera=${cameraKey}`,
+                cors: true, hasAudio: true, hasVideo: true
+            });
+            
+            state.player.on(mpegts.Events.MEDIA_INFO, () => {
+                console.log(`[CLIENT] Connected to ${cameraKey}`);
+                state.messageArea.classList.add('hidden');
+                state.reconnectAttempts = 0;
+            });
+
+            state.player.on(mpegts.Events.ERROR, () => {
+                console.error(`[CLIENT] Stream error for ${cameraKey}`);
+                state.reconnectAttempts++;
+                if (state.reconnectAttempts <= state.maxReconnectAttempts) {
+                    const delay = 1000 * state.reconnectAttempts;
+                    state.messageArea.textContent = `Connection failed. Retrying in ${delay/1000}s...`;
+                    setTimeout(() => attemptStreamConnection(cameraKey), delay);
+                } else {
+                     state.messageArea.textContent = 'Connection Failed';
+                }
+            });
+
+            state.player.attachMediaElement(state.videoElement);
+            state.player.load();
+            state.player.play().catch(e => console.error(`Play error for ${cameraKey}:`, e));
+        }
+        
+        function removeCamera(cameraKey) {
+            if (!players.has(cameraKey)) return;
+            const { player, container } = players.get(cameraKey);
+            player.destroy();
+            container.remove();
+            players.delete(cameraKey);
+            
+            if (audioSources.has(cameraKey)) {
+                audioSources.get(cameraKey).sourceNode.disconnect();
+                audioSources.delete(cameraKey);
+            }
+            
+            if (activeAudioSourceKey === cameraKey) {
+                activeAudioSourceKey = null;
+                if (analyzer) analyzer.stop();
+                analyzer = null;
+                listeningIndicator.classList.add('hidden');
+                if (players.size > 0) {
+                    setAudioSource(players.keys().next().value);
+                }
             }
         }
 
-        function handleStreamError(type, error) {
-            console.error(`[CLIENT] Stream error (${type}):`, error);
-            if (currentCameraKey !== cameraSelector.value) return;
-            if (streamReconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-                streamReconnectAttempts++;
-                const delay = 2000 * streamReconnectAttempts;
-                messageArea.textContent = `Connection failed. Retrying in ${delay/1000}s...`;
-                if (player) { try { player.destroy(); } catch(e){} player = null; }
-                setTimeout(() => {
-                    if (currentCameraKey === cameraSelector.value) attemptStreamConnection(currentCameraKey);
-                }, delay);
-            } else {
-                messageArea.textContent = 'Failed to connect to stream.';
-                cleanupCurrentStream();
-            }
-        }
+        function setAudioSource(cameraKey) {
+            if (!players.has(cameraKey) || activeAudioSourceKey === cameraKey) return;
+            
+            players.forEach((p, key) => {
+                p.videoElement.muted = key !== cameraKey;
+            });
 
-        function handleMediaInfo(mediaInfo) {
-            console.log('[CLIENT] Media info received:', mediaInfo);
-            messageArea.textContent = "";
-            videoElement.muted = false;
-            videoElement.volume = 0.5;
-            if (Object.keys(referenceFingerprints).length > 0 && !analyzer) {
-                setTimeout(() => {
-                    if (videoElement && !videoElement.paused) startAnalysis();
-                }, 1000);
-            }
+            activeAudioSourceKey = cameraKey;
+            console.log(`[AUDIO] Switched audio source to ${cameraKey}`);
+            
+            document.querySelectorAll('.mic-button').forEach(btn => btn.classList.remove('audio-source-active'));
+            document.querySelector(`.mic-button[data-key="${cameraKey}"]`).classList.add('audio-source-active');
+
+            startAnalysis();
         }
 
         function startAnalysis() {
+            if (analyzer) {
+                analyzer.stop();
+                analyzer = null;
+            }
+            if (!activeAudioSourceKey) return;
+
             try {
                 if (!audioContext || audioContext.state === 'closed') {
                     audioContext = new (window.AudioContext || window.webkitAudioContext)();
                 }
-                if (audioContext.state === 'suspended') audioContext.resume();
+                if (audioContext.state === 'suspended') {
+                    audioContext.resume();
+                }
                 
-                sourceNode = audioContext.createMediaElementSource(videoElement);
-                sourceNode.connect(audioContext.destination);
+                const { videoElement } = players.get(activeAudioSourceKey);
+                let sourceNode;
+                if (audioSources.has(activeAudioSourceKey)) {
+                    sourceNode = audioSources.get(activeAudioSourceKey).sourceNode;
+                } else {
+                    sourceNode = audioContext.createMediaElementSource(videoElement);
+                    sourceNode.connect(audioContext.destination);
+                    audioSources.set(activeAudioSourceKey, { sourceNode });
+                }
                 
                 analyzer = Meyda.createMeydaAnalyzer({
                     audioContext, source: sourceNode, bufferSize: 512,
                     featureExtractors: ["mfcc", "loudness"],
                     callback: features => {
+                        // Always process loudness for the UI visualizer
                         if (features?.loudness?.total) {
                             loudnessHistory.push(features.loudness.total);
-                            if (loudnessHistory.length > LOUDNESS_HISTORY_LENGTH) {
-                                loudnessHistory.shift();
-                            }
+                            if (loudnessHistory.length > LOUDNESS_HISTORY_LENGTH) loudnessHistory.shift();
                             drawHistogram();
-                            if (features.loudness.total > parseFloat(loudnessSlider.value)) {
-                                compareAndFindMatch(features.mfcc);
-                            }
+                        }
+                        // Always attempt to match fingerprint if we are in the waiting state.
+                        // The loudness check is removed from here to ensure constant analysis.
+                        if (currentMatchState === MATCH_STATES.WAITING && features?.mfcc) {
+                            compareAndFindMatch(features.mfcc);
                         }
                     }
                 });
                 analyzer.start();
                 listeningIndicator.classList.remove('hidden');
             } catch (error) {
-                console.error('[CLIENT] Error starting audio analysis:', error);
+                console.error(`[CLIENT] Error starting audio analysis for ${activeAudioSourceKey}:`, error);
             }
+        }
+
+        function compareAndFindMatch(liveMfcc) {
+            // Debounce to prevent multiple triggers for the same event
+            if (Date.now() - lastMatchTime < 5000) return; 
+
+            let bestMatch = { name: null, distance: Infinity };
+            const MATCH_THRESHOLD = 45; // Lower is a stricter match
+            
+            for (const name in referenceFingerprints) {
+                // Only check against fingerprints designated for starting a match
+                if (name.toLowerCase().includes('start')) {
+                    const refMfcc = referenceFingerprints[name];
+                    // Using Euclidean distance to compare fingerprints
+                    let distance = Math.sqrt(refMfcc.reduce((sum, val, i) => sum + Math.pow(val - liveMfcc[i], 2), 0));
+                    if (distance < bestMatch.distance) {
+                        bestMatch = { distance, name };
+                    }
+                }
+            }
+
+            // If a close enough match is found
+            if (bestMatch.distance < MATCH_THRESHOLD) {
+                lastMatchTime = Date.now();
+                logEvent(`Match Start Detected (${bestMatch.name})`, bestMatch.distance);
+                sendMatchEvent('MATCH_START');
+            }
+        }
+
+        function sendMatchEvent(eventType) {
+            if (eventType === 'MATCH_START' && currentMatchState !== MATCH_STATES.WAITING) return;
+            fetch('/api/match-event', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ eventType })
+            }).then(res => res.json()).then(data => {
+                if (data.success) {
+                    if (eventType === 'MATCH_START') {
+                        currentMatchState = MATCH_STATES.RECORDING;
+                        startMatchTimer();
+                    } else {
+                        currentMatchState = MATCH_STATES.WAITING;
+                        stopMatchTimer();
+                    }
+                    updateGameStateDisplay();
+                }
+            }).catch(err => console.error('Error sending match event:', err));
+        }
+        
+        manualRecordButton.addEventListener('click', () => sendMatchEvent('MATCH_START'));
+        manualStopButton.addEventListener('click', () => sendMatchEvent('MATCH_ABORT'));
+        resetMatchButton.addEventListener('click', () => sendMatchEvent('MATCH_ABORT'));
+
+        function startMatchTimer() {
+            const endTime = Date.now() + MATCH_DURATION;
+            matchTimerInterval = setInterval(() => {
+                const remaining = endTime - Date.now();
+                if (remaining <= 0) {
+                    stopMatchTimer();
+                    matchTimerDisplay.textContent = '00:00';
+                    currentMatchState = MATCH_STATES.WAITING;
+                    updateGameStateDisplay();
+                } else {
+                    const minutes = Math.floor(remaining / 60000);
+                    const seconds = Math.floor((remaining % 60000) / 1000);
+                    matchTimerDisplay.textContent = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+                }
+            }, 1000);
+        }
+
+        function stopMatchTimer() {
+            if (matchTimerInterval) clearInterval(matchTimerInterval);
+            matchTimerInterval = null;
+            matchTimerDisplay.textContent = '';
+        }
+        
+        function updateGameStateDisplay() {
+            gameStateDisplay.textContent = currentMatchState;
+            const isRec = currentMatchState === MATCH_STATES.RECORDING;
+            recordingStatus.classList.toggle('hidden', !isRec);
+            recordingStatus.classList.toggle('flex', isRec);
+            manualRecordButton.disabled = isRec;
+            manualStopButton.disabled = !isRec;
+        }
+
+        function logEvent(name, confidence) {
+            const now = new Date();
+            const timestamp = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
+            const eventItem = document.createElement('div');
+            eventItem.className = 'bg-gray-800 p-3 rounded-lg event-log-item';
+            eventItem.innerHTML = `<div class="flex justify-between items-center"><span class="font-bold text-lg text-cyan-400">${name}</span><span class="text-xs text-gray-400">${timestamp}</span></div><div class="text-sm text-gray-300">Confidence (dist): ${confidence.toFixed(2)}</div>`;
+            eventLog.prepend(eventItem);
         }
 
         function drawHistogram() {
             const w = canvas.width;
             const h = canvas.height;
-            // Use the constant for scaling
-            const maxLoudness = MAX_LOUDNESS; 
-            
             canvasCtx.clearRect(0, 0, w, h);
             canvasCtx.beginPath();
             canvasCtx.strokeStyle = '#38bdf8';
             canvasCtx.lineWidth = 2.5;
             canvasCtx.lineJoin = 'round';
-
             const step = w / (LOUDNESS_HISTORY_LENGTH - 1);
-            
             let firstLoudness = loudnessHistory[0] || 0;
-            let firstY = h - Math.min(h, (firstLoudness / maxLoudness) * h);
+            let firstY = h - Math.min(h, (firstLoudness / MAX_LOUDNESS) * h);
             canvasCtx.moveTo(0, firstY);
-
             for (let i = 1; i < loudnessHistory.length; i++) {
                 const loudness = loudnessHistory[i] || 0;
                 const x = i * step;
-                const y = h - Math.min(h, (loudness / maxLoudness) * h);
+                const y = h - Math.min(h, (loudness / MAX_LOUDNESS) * h);
                 canvasCtx.lineTo(x, y);
             }
             canvasCtx.stroke();
         }
 
         function updateThresholdLine() {
-            // Use the constant for scaling
-            const maxLoudness = MAX_LOUDNESS;
             const threshold = parseFloat(loudnessSlider.value);
-            const percent = (threshold / maxLoudness) * 100;
+            const percent = (threshold / MAX_LOUDNESS) * 100;
             thresholdLine.style.bottom = `${percent}%`;
         }
+
+        volumeSlider.addEventListener('input', (e) => {
+            const volume = e.target.value / 100;
+            volumeValue.textContent = e.target.value;
+            players.forEach(p => {
+                p.videoElement.volume = volume;
+            });
+             if (audioContext && audioContext.state === 'suspended') {
+                audioContext.resume().then(() => {
+                    if (activeAudioSourceKey && players.has(activeAudioSourceKey)) {
+                        players.get(activeAudioSourceKey).videoElement.muted = false;
+                    }
+                });
+            } else if (activeAudioSourceKey && players.has(activeAudioSourceKey)) {
+                 players.get(activeAudioSourceKey).videoElement.muted = false;
+            }
+        });
+
+        gridSlider.addEventListener('input', (e) => {
+            const cols = e.target.value;
+            videoGrid.className = `grid grid-cols-1 md:grid-cols-${cols} gap-4`;
+        });
 
         loudnessSlider.addEventListener('input', () => {
             loudnessValue.textContent = loudnessSlider.value;
@@ -483,7 +518,7 @@
                 await fetch('/api/threshold', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ threshold })
+                    body: JSON.stringify({ threshold: parseFloat(threshold) })
                 });
                 saveThresholdButton.textContent = 'Saved!';
             } catch (error) {
@@ -494,15 +529,7 @@
             }
         });
 
-        let cameraChangeTimeout;
-        cameraSelector.addEventListener('change', (event) => {
-            if (cameraChangeTimeout) clearTimeout(cameraChangeTimeout);
-            cameraChangeTimeout = setTimeout(() => loadCameraStream(event.target.value), 100);
-        });
-        
         initializeApp();
-        window.addEventListener('beforeunload', cleanupCurrentStream);
-
     </script>
 </body>
 </html>
