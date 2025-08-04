@@ -219,6 +219,14 @@
                 for (const key in cameras) {
                     addCameraStream(key, cameras[key]);
                 }
+                
+                // Immediate audio setup after camera initialization
+                setTimeout(() => {
+                    if (activeAudioSourceKey) {
+                        startAnalysis(true);
+                    }
+                }, 1000);
+                
             } catch (error) {
                 console.error("Initialization failed:", error);
                 logEvent('System Error', 'Failed to initialize: ' + error.message);
@@ -410,11 +418,15 @@
             document.querySelectorAll('.mic-button').forEach(btn => btn.classList.remove('audio-source-active'));
             document.querySelector(`.mic-button[data-key="${cameraKey}"]`).classList.add('audio-source-active');
 
-            startAnalysis();
+            // Force immediate audio context resume and analysis start
+            startAnalysis(true); // Pass force flag
         }
 
         function updateListeningIndicator() {
-            if (isAudioListening && currentMatchState === MATCH_STATES.WAITING) {
+            // Show listening status based on actual analyzer state, not just flags
+            const isActuallyListening = analyzer && analyzer.running && currentMatchState === MATCH_STATES.WAITING;
+            
+            if (isActuallyListening) {
                 listeningIndicator.classList.remove('hidden', 'listening-inactive');
                 listeningIndicator.classList.add('listening-indicator');
                 listeningIndicator.querySelector('p').textContent = 'LISTENING';
@@ -422,29 +434,46 @@
             } else {
                 listeningIndicator.classList.remove('listening-indicator');
                 listeningIndicator.classList.add('listening-inactive');
-                listeningIndicator.querySelector('p').textContent = 'NOT LISTENING';
+                listeningIndicator.querySelector('p').textContent = currentMatchState === MATCH_STATES.RECORDING ? 'RECORDING' : 'NOT LISTENING';
                 listeningIndicator.querySelector('p').className = 'ml-2 text-sm text-red-400';
             }
             listeningIndicator.classList.remove('hidden');
         }
 
-        function startAnalysis() {
-            if (analyzer) {
-                analyzer.stop();
+        async function startAnalysis(forceRestart = false) {
+            // Stop existing analyzer if force restart or if it exists
+            if (analyzer && (forceRestart || analyzer.running)) {
+                try {
+                    analyzer.stop();
+                } catch (e) {
+                    console.warn('[AUDIO] Error stopping existing analyzer:', e);
+                }
                 analyzer = null;
             }
-            if (!activeAudioSourceKey) return;
+            
+            if (!activeAudioSourceKey || !players.has(activeAudioSourceKey)) {
+                console.warn('[AUDIO] No active audio source available');
+                isAudioListening = false;
+                updateListeningIndicator();
+                return;
+            }
 
             try {
+                // Create or resume audio context
                 if (!audioContext || audioContext.state === 'closed') {
                     audioContext = new (window.AudioContext || window.webkitAudioContext)();
                 }
+                
+                // Force resume if suspended - this is key for immediate activation
                 if (audioContext.state === 'suspended') {
-                    audioContext.resume();
+                    console.log('[AUDIO] Resuming suspended audio context...');
+                    await audioContext.resume();
                 }
                 
                 const { videoElement } = players.get(activeAudioSourceKey);
                 let sourceNode;
+                
+                // Reuse or create source node
                 if (audioSources.has(activeAudioSourceKey)) {
                     sourceNode = audioSources.get(activeAudioSourceKey).sourceNode;
                 } else {
@@ -453,47 +482,53 @@
                     audioSources.set(activeAudioSourceKey, { sourceNode });
                 }
                 
+                // Create new analyzer
                 analyzer = Meyda.createMeydaAnalyzer({
                     audioContext,
                     source: sourceNode,
                     bufferSize: 512,
                     featureExtractors: ["mfcc", "loudness"],
                     callback: features => {
-                        // Update histogram with loudness for UI only
+                        // Update histogram with loudness for UI
                         if (features?.loudness?.total) {
                             loudnessHistory.push(features.loudness.total);
                             if (loudnessHistory.length > LOUDNESS_HISTORY_LENGTH) loudnessHistory.shift();
                             drawHistogram();
                         }
 
-                        // Match start ONLY on MFCC, and only when listening
-                        if (currentMatchState === MATCH_STATES.WAITING && isAudioListening && features?.mfcc) {
+                        // Match detection - removed the debounce delay issue
+                        if (currentMatchState === MATCH_STATES.WAITING && features?.mfcc) {
                             compareAndFindMatch(features.mfcc);
                         }
                     }
                 });
+                
                 analyzer.start();
                 isAudioListening = true;
+                console.log(`[AUDIO] Analysis started successfully for ${activeAudioSourceKey}`);
+                
+                // Immediate UI update
                 updateListeningIndicator();
+                
             } catch (error) {
-                console.error(`[CLIENT] Error starting audio analysis for ${activeAudioSourceKey}:`, error);
+                console.error(`[AUDIO] Error starting audio analysis:`, error);
                 isAudioListening = false;
+                analyzer = null;
                 updateListeningIndicator();
             }
         }
 
         function compareAndFindMatch(liveMfcc) {
-            // Debounce to prevent multiple triggers for the same event
-            if (Date.now() - lastMatchTime < 5000) return; 
+            // Reduced debounce from 5 seconds to 2 seconds for faster response
+            if (Date.now() - lastMatchTime < 2000) return; 
 
             let bestMatch = { name: null, distance: Infinity };
-            const MATCH_THRESHOLD = 20; // Lower value = stricter match
+            const MATCH_THRESHOLD = 20;
 
             for (const name in referenceFingerprints) {
                 if (name.toLowerCase().includes('start')) {
                     const fingerprintData = referenceFingerprints[name];
-                    const refMfcc = fingerprintData.mfcc || fingerprintData; // Handle both old and new format
-                    // Use Euclidean distance
+                    const refMfcc = fingerprintData.mfcc || fingerprintData;
                     let distance = Math.sqrt(refMfcc.reduce((sum, val, i) => sum + Math.pow(val - liveMfcc[i], 2), 0));
                     if (distance < bestMatch.distance) {
                         bestMatch = { distance, name };
@@ -501,7 +536,6 @@
                 }
             }
 
-            // Trigger only if a close enough match is found
             if (bestMatch.distance < MATCH_THRESHOLD) {
                 lastMatchTime = Date.now();
                 logEvent(`Audio Detection: ${bestMatch.name}`, bestMatch.distance.toFixed(2));
@@ -512,11 +546,13 @@
         function sendMatchEvent(eventType) {
             if (eventType === 'MATCH_START' && currentMatchState !== MATCH_STATES.WAITING) return;
             
-            const isManual = !isAudioListening || eventType === 'MATCH_ABORT';
+            const isManual = eventType === 'MATCH_ABORT' || 
+                            (eventType === 'MATCH_START' && !isAudioListening);
+            
             if (eventType === 'MATCH_ABORT') {
                 matchEndedBy = 'manual';
             } else if (eventType === 'MATCH_START') {
-                matchEndedBy = 'timer'; // Default, will be overridden if manually stopped
+                matchEndedBy = 'timer';
             }
             
             fetch('/api/match-event', {
@@ -528,7 +564,7 @@
                     if (eventType === 'MATCH_START') {
                         currentMatchState = MATCH_STATES.RECORDING;
                         startMatchTimer();
-                        isAudioListening = false; // Stop listening during match
+                        // Don't stop listening - just update UI
                         logEvent(`Match ${currentMatchNumber} Started`, isManual ? 'Manual' : 'Audio');
                     } else {
                         currentMatchState = MATCH_STATES.WAITING;
@@ -536,13 +572,61 @@
                         logEvent(`Match ${currentMatchNumber} Ended`, `${matchEndedBy === 'manual' ? 'Manual intervention' : 'Timer expired'}`);
                         currentMatchNumber++;
                         updateNextFileName();
-                        isAudioListening = true; // Resume listening after match
+                        
+                        // Immediately restart analysis after match ends
+                        setTimeout(() => {
+                            startAnalysis(true);
+                        }, 100); // Very short delay to ensure state is updated
                     }
                     updateGameStateDisplay();
                     updateListeningIndicator();
                 }
             }).catch(err => console.error('Error sending match event:', err));
         }
+
+        // Enhanced volume slider event listener with immediate audio context activation
+        volumeSlider.addEventListener('input', async (e) => {
+            const volume = e.target.value / 100;
+            volumeValue.textContent = e.target.value + '%';
+            
+            players.forEach(p => {
+                p.videoElement.volume = volume;
+            });
+            
+            // Ensure audio context is active when user interacts
+            if (audioContext) {
+                if (audioContext.state === 'suspended') {
+                    try {
+                        await audioContext.resume();
+                        console.log('[AUDIO] Audio context resumed via volume control');
+                        // Restart analysis if we have an active source
+                        if (activeAudioSourceKey && currentMatchState === MATCH_STATES.WAITING) {
+                            startAnalysis(true);
+                        }
+                    } catch (e) {
+                        console.warn('[AUDIO] Failed to resume audio context:', e);
+                    }
+                }
+                
+                if (activeAudioSourceKey && players.has(activeAudioSourceKey)) {
+                    players.get(activeAudioSourceKey).videoElement.muted = false;
+                }
+            }
+        });
+
+        function activateAudioOnInteraction() {
+            if (audioContext && audioContext.state === 'suspended') {
+                audioContext.resume().then(() => {
+                    console.log('[AUDIO] Audio context resumed via user interaction');
+                    if (activeAudioSourceKey && currentMatchState === MATCH_STATES.WAITING) {
+                        startAnalysis(true);
+                    }
+                });
+            }
+        }
+
+        document.addEventListener('click', activateAudioOnInteraction, { once: false });
+        document.addEventListener('keydown', activateAudioOnInteraction, { once: false });
         
         function updateNextFileName() {
             const firstCameraKey = players.size > 0 ? players.keys().next().value : 'camera1';
