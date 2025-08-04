@@ -13,6 +13,7 @@
         .event-log-item { animation: fadeIn 0.5s ease-in-out; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
         .listening-indicator span { height: 10px; width: 10px; background-color: #34D399; border-radius: 50%; display: inline-block; animation: pulse 1.5s infinite; }
+        .listening-inactive span { background-color: #EF4444; animation: none; }
         @keyframes pulse {
             0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.7); }
             70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(52, 211, 153, 0); }
@@ -22,8 +23,8 @@
         @keyframes recording-pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
         .audio-source-active svg { fill: #34D399; }
         #canvasContainer {
-            height: 100px;
-            background-color: #1f2937;
+            height: 150px;
+            background: linear-gradient(135deg, #1f2937 0%, #111827 100%);
             border-radius: 0.5rem;
             border: 1px solid #374151;
             position: relative;
@@ -38,6 +39,15 @@
             background-color: #f87171;
             transition: bottom 0.2s ease;
             z-index: 10;
+        }
+        .fingerprint-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            opacity: 0.3;
+            z-index: 5;
         }
         .video-wrapper {
             position: relative;
@@ -63,10 +73,13 @@
     <div class="w-full max-w-screen-xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div class="lg:col-span-2">
             <div class="flex justify-between items-center mb-4">
-                 <h1 class="text-3xl font-bold text-center">Live Streams</h1>
+                 <h1 class="text-3xl font-bold text-center">Live Camera Feeds</h1>
                  <div class="flex items-center gap-4">
-                    <label for="gridSlider" class="text-sm">Grid Columns:</label>
+                    <label for="gridSlider" class="text-sm">Grid Layout:</label>
                     <input type="range" id="gridSlider" min="1" max="3" value="2" class="w-32">
+                    <button id="reconnectAllBtn" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded text-sm">
+                        Reconnect All
+                    </button>
                  </div>
             </div>
             <div id="videoGrid" class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -75,19 +88,20 @@
 
         <div class="lg:col-span-1">
              <div class="flex items-center justify-center mb-2">
-                <h2 class="text-2xl font-bold text-center">Game State</h2>
-                <div id="listeningIndicator" class="ml-4 items-center hidden">
-                    <span class="listening-indicator"><span></span></span>
+                <h2 class="text-2xl font-bold text-center">Match Status</h2>
+                <div id="listeningIndicator" class="ml-4 items-center hidden listening-indicator">
+                    <span><span></span></span>
                     <p class="ml-2 text-sm text-green-400">LISTENING</p>
                 </div>
             </div>
             <div class="mb-4 p-4 bg-gray-900 rounded-lg shadow-lg text-center">
                 <p id="gameStateDisplay" class="text-2xl font-bold text-yellow-400 tracking-wider">WAITING FOR MATCH</p>
                 <p id="matchTimerDisplay" class="text-lg text-gray-300 mt-1 h-6"></p>
+                <p id="nextMatchFile" class="text-sm text-blue-400 mt-2">Next Recording: <span id="nextFileName">match1_camera1.mp4</span></p>
             </div>
 
             <div class="bg-gray-900/50 p-4 rounded-2xl shadow-lg border border-gray-700 space-y-4">
-                <h2 class="text-2xl font-bold text-center">Recording Controls</h2>
+                <h2 class="text-2xl font-bold text-center">Match Controls</h2>
                  <div class="flex items-center justify-center gap-2">
                     <div id="recordingStatus" class="hidden items-center gap-2">
                         <span class="recording-indicator w-3 h-3"></span>
@@ -95,30 +109,44 @@
                     </div>
                 </div>
                 <div class="grid grid-cols-2 gap-3">
-                    <button id="manualRecordButton" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-md transition duration-300">Manual Start</button>
-                    <button id="manualStopButton" class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-md transition duration-300">Manual Stop</button>
+                    <button id="startMatchBtn" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-md transition duration-300">Start Match</button>
+                    <button id="endMatchBtn" class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-md transition duration-300">End Match</button>
                 </div>
-                 <button id="resetMatchButton" class="w-full bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-2 px-5 rounded-md transition duration-300">Reset Match</button>
+                 <button id="resetMatchBtn" class="w-full bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-2 px-5 rounded-md transition duration-300">Reset System</button>
             </div>
 
             <div class="bg-gray-900/50 p-4 rounded-2xl shadow-lg border border-gray-700 space-y-4 mt-6">
-                <h2 class="text-2xl font-bold text-center">Audio Analysis</h2>
-                <div>
-                    <label for="volumeSlider" class="block mb-2 text-sm font-medium text-gray-300">Global Volume: <span id="volumeValue">50</span>%</label>
-                    <input id="volumeSlider" type="range" min="0" max="100" value="50" class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+                <h2 class="text-2xl font-bold text-center">Audio Detection System</h2>
+                <div class="flex items-center justify-between">
+                    <label for="volumeSlider" class="text-sm font-medium text-gray-300">Master Volume:</label>
+                    <span id="volumeValue" class="text-cyan-400 font-bold">50%</span>
                 </div>
-                <div>
-                    <label for="loudnessSlider" class="block mb-2 text-sm font-medium text-gray-300">Loudness Threshold: <span id="loudnessValue" class="font-bold text-cyan-400">20</span></label>
-                    <input id="loudnessSlider" type="range" min="0" max="100" value="20" class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+                <input id="volumeSlider" type="range" min="0" max="100" value="50" class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+                
+                <div class="flex items-center justify-between">
+                    <label for="loudnessSlider" class="text-sm font-medium text-gray-300">Detection Threshold:</label>
+                    <span id="loudnessValue" class="font-bold text-cyan-400">20</span>
                 </div>
+                <input id="loudnessSlider" type="range" min="0" max="100" value="20" class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+                
+                <div class="flex gap-2">
+                    <button id="playTestAudioBtn" class="flex-1 bg-purple-600 hover:bg-purple-700 text-white py-2 px-3 rounded text-sm">
+                        Play Live Audio
+                    </button>
+                    <button id="overlayFingerprintBtn" class="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white py-2 px-3 rounded text-sm">
+                        Show Fingerprints
+                    </button>
+                </div>
+                
                 <div id="canvasContainer">
                     <canvas id="histogramCanvas"></canvas>
+                    <canvas id="fingerprintOverlay" class="fingerprint-overlay"></canvas>
                     <div id="thresholdLine"></div>
                 </div>
-                <button id="saveThresholdButton" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-md transition duration-300">Save Threshold</button>
+                <button id="saveThresholdButton" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-md transition duration-300">Save Detection Settings</button>
             </div>
 
-            <h2 class="text-2xl font-bold mb-4 mt-6 text-center">Event Log</h2>
+            <h2 class="text-2xl font-bold mb-4 mt-6 text-center">Match Event Log</h2>
             <div id="eventLog" class="bg-gray-900/50 p-4 rounded-2xl shadow-lg border border-gray-700 space-y-3 h-64 overflow-y-auto"></div>
         </div>
     </div>
@@ -127,19 +155,25 @@
         const videoGrid = document.getElementById('videoGrid');
         const gameStateDisplay = document.getElementById('gameStateDisplay');
         const matchTimerDisplay = document.getElementById('matchTimerDisplay');
+        const nextFileName = document.getElementById('nextFileName');
         const eventLog = document.getElementById('eventLog');
         const listeningIndicator = document.getElementById('listeningIndicator');
         const recordingStatus = document.getElementById('recordingStatus');
-        const manualRecordButton = document.getElementById('manualRecordButton');
-        const manualStopButton = document.getElementById('manualStopButton');
-        const resetMatchButton = document.getElementById('resetMatchButton');
+        const startMatchBtn = document.getElementById('startMatchBtn');
+        const endMatchBtn = document.getElementById('endMatchBtn');
+        const resetMatchBtn = document.getElementById('resetMatchBtn');
+        const reconnectAllBtn = document.getElementById('reconnectAllBtn');
         const loudnessSlider = document.getElementById('loudnessSlider');
         const loudnessValue = document.getElementById('loudnessValue');
         const volumeSlider = document.getElementById('volumeSlider');
         const volumeValue = document.getElementById('volumeValue');
         const gridSlider = document.getElementById('gridSlider');
+        const playTestAudioBtn = document.getElementById('playTestAudioBtn');
+        const overlayFingerprintBtn = document.getElementById('overlayFingerprintBtn');
         const canvas = document.getElementById('histogramCanvas');
         const canvasCtx = canvas.getContext('2d');
+        const fingerprintCanvas = document.getElementById('fingerprintOverlay');
+        const fingerprintCtx = fingerprintCanvas.getContext('2d');
         const thresholdLine = document.getElementById('thresholdLine');
         const saveThresholdButton = document.getElementById('saveThresholdButton');
 
@@ -150,6 +184,11 @@
         let audioContext, analyzer, activeAudioSourceKey = null;
         let loudnessHistory = [];
         let lastMatchTime = 0;
+        let currentMatchNumber = 1;
+        let isAudioListening = false;
+        let isPlayingTestAudio = false;
+        let showFingerprintOverlay = false;
+        let matchEndedBy = 'timer'; // 'timer' or 'manual'
         
         const LOUDNESS_HISTORY_LENGTH = 50;
         const MAX_LOUDNESS = 100;
@@ -160,7 +199,11 @@
         async function initializeApp() {
             canvas.width = canvas.clientWidth;
             canvas.height = canvas.clientHeight;
+            fingerprintCanvas.width = fingerprintCanvas.clientWidth;
+            fingerprintCanvas.height = fingerprintCanvas.clientHeight;
             updateGameStateDisplay();
+            updateNextFileName();
+            
             try {
                 const [cameras, fingerprints, thresholdData] = await Promise.all([
                     fetch('/api/cameras').then(res => res.json()),
@@ -171,16 +214,21 @@
                 loudnessSlider.value = thresholdData.threshold;
                 loudnessValue.textContent = thresholdData.threshold;
                 updateThresholdLine();
+                
+                console.log('Loaded cameras:', cameras);
                 for (const key in cameras) {
                     addCameraStream(key, cameras[key]);
                 }
             } catch (error) {
                 console.error("Initialization failed:", error);
+                logEvent('System Error', 'Failed to initialize: ' + error.message);
             }
         }
 
         function addCameraStream(cameraKey, cameraConfig) {
             if (players.has(cameraKey)) return;
+
+            console.log(`Adding camera stream: ${cameraKey}`, cameraConfig);
 
             const container = document.createElement('div');
             container.id = `container-${cameraKey}`;
@@ -190,11 +238,12 @@
             header.className = 'p-2 bg-gray-700/50 flex items-center justify-between';
             header.innerHTML = `
                 <span class="font-bold">${cameraConfig.name}</span>
-                <div class="flex items-center">
-                    <button class="mic-button p-1" data-key="${cameraKey}" title="Set as audio source">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-white" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm5 3a1 1 0 00-2 0v1a1 1 0 102 0V7zM5 8a1 1 0 011-1h1a1 1 0 110 2H6a1 1 0 01-1-1zm1 3a1 1 0 100 2h8a1 1 0 100-2H6z" clip-rule="evenodd" /></svg>
+                <div class="flex items-center gap-2">
+                    <button class="mic-button p-1" data-key="${cameraKey}" title="Use as audio source">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-white" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clip-rule="evenodd" /></svg>
                     </button>
-                    <button class="remove-button text-red-500 font-bold ml-2 px-2" data-key="${cameraKey}" title="Remove camera">X</button>
+                    <button class="reconnect-button bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded text-xs" data-key="${cameraKey}" title="Reconnect camera">↻</button>
+                    <button class="remove-button text-red-500 font-bold px-2" data-key="${cameraKey}" title="Remove camera">×</button>
                 </div>
             `;
             
@@ -218,7 +267,9 @@
             container.appendChild(videoWrapper);
             videoGrid.appendChild(container);
 
+            // Event listeners
             header.querySelector('.remove-button').onclick = () => removeCamera(cameraKey);
+            header.querySelector('.reconnect-button').onclick = () => reconnectCamera(cameraKey);
             header.querySelector('.mic-button').onclick = () => setAudioSource(cameraKey);
 
             const playerState = {
@@ -238,49 +289,94 @@
             }
         }
 
+        function reconnectCamera(cameraKey) {
+            const state = players.get(cameraKey);
+            if (!state) return;
+            
+            state.reconnectAttempts = 0;
+            attemptStreamConnection(cameraKey);
+            logEvent(`Manual reconnect: ${cameraKey}`, 'System');
+        }
+
+        function reconnectAllCameras() {
+            players.forEach((state, cameraKey) => {
+                state.reconnectAttempts = 0;
+                attemptStreamConnection(cameraKey);
+            });
+            logEvent('Reconnecting all cameras', 'System');
+        }
+
         function attemptStreamConnection(cameraKey) {
             const state = players.get(cameraKey);
             if (!state) return;
 
+            console.log(`Attempting to connect to camera: ${cameraKey}`);
             state.messageArea.textContent = 'Connecting...';
             state.messageArea.classList.remove('hidden');
 
             if (state.player) {
-                state.player.destroy();
+                try {
+                    state.player.destroy();
+                } catch (e) {
+                    console.warn(`Error destroying player for ${cameraKey}:`, e);
+                }
             }
 
+            const streamUrl = `/stream?camera=${cameraKey}`;
+            console.log(`Stream URL for ${cameraKey}: ${streamUrl}`);
+
             state.player = mpegts.createPlayer({
-                type: 'flv', isLive: true, url: `/stream?camera=${cameraKey}`,
-                cors: true, hasAudio: true, hasVideo: true
+                type: 'flv', 
+                isLive: true, 
+                url: streamUrl,
+                cors: true, 
+                hasAudio: true, 
+                hasVideo: true
             });
             
-            state.player.on(mpegts.Events.MEDIA_INFO, () => {
-                console.log(`[CLIENT] Connected to ${cameraKey}`);
+            state.player.on(mpegts.Events.MEDIA_INFO, (mediaInfo) => {
+                console.log(`[CLIENT] Connected to ${cameraKey}`, mediaInfo);
                 state.messageArea.classList.add('hidden');
                 state.reconnectAttempts = 0;
+                logEvent(`Camera Connected: ${cameraKey}`, 'System');
             });
 
-            state.player.on(mpegts.Events.ERROR, () => {
-                console.error(`[CLIENT] Stream error for ${cameraKey}`);
+            state.player.on(mpegts.Events.ERROR, (type, details, fatal) => {
+                console.error(`[CLIENT] Stream error for ${cameraKey}:`, type, details, fatal);
                 state.reconnectAttempts++;
                 if (state.reconnectAttempts <= state.maxReconnectAttempts) {
                     const delay = 1000 * state.reconnectAttempts;
                     state.messageArea.textContent = `Connection failed. Retrying in ${delay/1000}s...`;
                     setTimeout(() => attemptStreamConnection(cameraKey), delay);
                 } else {
-                     state.messageArea.textContent = 'Connection Failed';
+                     state.messageArea.textContent = 'Connection Failed - Check camera settings';
+                     logEvent(`Camera Failed: ${cameraKey}`, 'Check IP/port settings');
                 }
             });
 
-            state.player.attachMediaElement(state.videoElement);
-            state.player.load();
-            state.player.play().catch(e => console.error(`Play error for ${cameraKey}:`, e));
+            try {
+                state.player.attachMediaElement(state.videoElement);
+                state.player.load();
+                state.player.play().catch(e => {
+                    console.error(`Play error for ${cameraKey}:`, e);
+                    state.messageArea.textContent = 'Play Error - Check stream format';
+                });
+            } catch (error) {
+                console.error(`Failed to setup player for ${cameraKey}:`, error);
+                state.messageArea.textContent = 'Setup Error';
+            }
         }
         
         function removeCamera(cameraKey) {
             if (!players.has(cameraKey)) return;
             const { player, container } = players.get(cameraKey);
-            player.destroy();
+            
+            try {
+                if (player) player.destroy();
+            } catch (e) {
+                console.warn(`Error destroying player for ${cameraKey}:`, e);
+            }
+            
             container.remove();
             players.delete(cameraKey);
             
@@ -293,7 +389,8 @@
                 activeAudioSourceKey = null;
                 if (analyzer) analyzer.stop();
                 analyzer = null;
-                listeningIndicator.classList.add('hidden');
+                isAudioListening = false;
+                updateListeningIndicator();
                 if (players.size > 0) {
                     setAudioSource(players.keys().next().value);
                 }
@@ -314,6 +411,21 @@
             document.querySelector(`.mic-button[data-key="${cameraKey}"]`).classList.add('audio-source-active');
 
             startAnalysis();
+        }
+
+        function updateListeningIndicator() {
+            if (isAudioListening && currentMatchState === MATCH_STATES.WAITING) {
+                listeningIndicator.classList.remove('hidden', 'listening-inactive');
+                listeningIndicator.classList.add('listening-indicator');
+                listeningIndicator.querySelector('p').textContent = 'LISTENING';
+                listeningIndicator.querySelector('p').className = 'ml-2 text-sm text-green-400';
+            } else {
+                listeningIndicator.classList.remove('listening-indicator');
+                listeningIndicator.classList.add('listening-inactive');
+                listeningIndicator.querySelector('p').textContent = 'NOT LISTENING';
+                listeningIndicator.querySelector('p').className = 'ml-2 text-sm text-red-400';
+            }
+            listeningIndicator.classList.remove('hidden');
         }
 
         function startAnalysis() {
@@ -354,16 +466,19 @@
                             drawHistogram();
                         }
 
-                        // Match start ONLY on MFCC, not on loudness
-                        if (currentMatchState === MATCH_STATES.WAITING && features?.mfcc) {
+                        // Match start ONLY on MFCC, and only when listening
+                        if (currentMatchState === MATCH_STATES.WAITING && isAudioListening && features?.mfcc) {
                             compareAndFindMatch(features.mfcc);
                         }
                     }
                 });
                 analyzer.start();
-                listeningIndicator.classList.remove('hidden');
+                isAudioListening = true;
+                updateListeningIndicator();
             } catch (error) {
                 console.error(`[CLIENT] Error starting audio analysis for ${activeAudioSourceKey}:`, error);
+                isAudioListening = false;
+                updateListeningIndicator();
             }
         }
 
@@ -372,11 +487,12 @@
             if (Date.now() - lastMatchTime < 5000) return; 
 
             let bestMatch = { name: null, distance: Infinity };
-            const MATCH_THRESHOLD = 20; // Lower value = stricter match (try 20 or lower)
+            const MATCH_THRESHOLD = 20; // Lower value = stricter match
 
             for (const name in referenceFingerprints) {
                 if (name.toLowerCase().includes('start')) {
-                    const refMfcc = referenceFingerprints[name];
+                    const fingerprintData = referenceFingerprints[name];
+                    const refMfcc = fingerprintData.mfcc || fingerprintData; // Handle both old and new format
                     // Use Euclidean distance
                     let distance = Math.sqrt(refMfcc.reduce((sum, val, i) => sum + Math.pow(val - liveMfcc[i], 2), 0));
                     if (distance < bestMatch.distance) {
@@ -388,34 +504,61 @@
             // Trigger only if a close enough match is found
             if (bestMatch.distance < MATCH_THRESHOLD) {
                 lastMatchTime = Date.now();
-                logEvent(`Match Start Detected (${bestMatch.name})`, bestMatch.distance);
+                logEvent(`Audio Detection: ${bestMatch.name}`, bestMatch.distance.toFixed(2));
                 sendMatchEvent('MATCH_START');
             }
         }
 
         function sendMatchEvent(eventType) {
             if (eventType === 'MATCH_START' && currentMatchState !== MATCH_STATES.WAITING) return;
+            
+            const isManual = !isAudioListening || eventType === 'MATCH_ABORT';
+            if (eventType === 'MATCH_ABORT') {
+                matchEndedBy = 'manual';
+            } else if (eventType === 'MATCH_START') {
+                matchEndedBy = 'timer'; // Default, will be overridden if manually stopped
+            }
+            
             fetch('/api/match-event', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ eventType })
+                body: JSON.stringify({ eventType, matchNumber: currentMatchNumber, isManual })
             }).then(res => res.json()).then(data => {
                 if (data.success) {
                     if (eventType === 'MATCH_START') {
                         currentMatchState = MATCH_STATES.RECORDING;
                         startMatchTimer();
+                        isAudioListening = false; // Stop listening during match
+                        logEvent(`Match ${currentMatchNumber} Started`, isManual ? 'Manual' : 'Audio');
                     } else {
                         currentMatchState = MATCH_STATES.WAITING;
                         stopMatchTimer();
+                        logEvent(`Match ${currentMatchNumber} Ended`, `${matchEndedBy === 'manual' ? 'Manual intervention' : 'Timer expired'}`);
+                        currentMatchNumber++;
+                        updateNextFileName();
+                        isAudioListening = true; // Resume listening after match
                     }
                     updateGameStateDisplay();
+                    updateListeningIndicator();
                 }
             }).catch(err => console.error('Error sending match event:', err));
         }
         
-        manualRecordButton.addEventListener('click', () => sendMatchEvent('MATCH_START'));
-        manualStopButton.addEventListener('click', () => sendMatchEvent('MATCH_ABORT'));
-        resetMatchButton.addEventListener('click', () => sendMatchEvent('MATCH_ABORT'));
+        function updateNextFileName() {
+            const firstCameraKey = players.size > 0 ? players.keys().next().value : 'camera1';
+            nextFileName.textContent = `match${currentMatchNumber}_${firstCameraKey}.mp4`;
+        }
+
+        startMatchBtn.addEventListener('click', () => sendMatchEvent('MATCH_START'));
+        endMatchBtn.addEventListener('click', () => {
+            matchEndedBy = 'manual';
+            sendMatchEvent('MATCH_ABORT');
+        });
+        resetMatchBtn.addEventListener('click', () => {
+            matchEndedBy = 'manual';
+            sendMatchEvent('MATCH_ABORT');
+        });
+        reconnectAllBtn.addEventListener('click', reconnectAllCameras);
 
         function startMatchTimer() {
             const endTime = Date.now() + MATCH_DURATION;
@@ -425,6 +568,8 @@
                     stopMatchTimer();
                     matchTimerDisplay.textContent = '00:00';
                     currentMatchState = MATCH_STATES.WAITING;
+                    matchEndedBy = 'timer';
+                    sendMatchEvent('MATCH_ABORT'); // This will log as timer expired
                     updateGameStateDisplay();
                 } else {
                     const minutes = Math.floor(remaining / 60000);
@@ -445,16 +590,22 @@
             const isRec = currentMatchState === MATCH_STATES.RECORDING;
             recordingStatus.classList.toggle('hidden', !isRec);
             recordingStatus.classList.toggle('flex', isRec);
-            manualRecordButton.disabled = isRec;
-            manualStopButton.disabled = !isRec;
+            startMatchBtn.disabled = isRec;
+            endMatchBtn.disabled = !isRec;
         }
 
-        function logEvent(name, confidence) {
+        function logEvent(name, details) {
             const now = new Date();
             const timestamp = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
             const eventItem = document.createElement('div');
             eventItem.className = 'bg-gray-800 p-3 rounded-lg event-log-item';
-            eventItem.innerHTML = `<div class="flex justify-between items-center"><span class="font-bold text-lg text-cyan-400">${name}</span><span class="text-xs text-gray-400">${timestamp}</span></div><div class="text-sm text-gray-300">Confidence (dist): ${confidence.toFixed(2)}</div>`;
+            eventItem.innerHTML = `
+                <div class="flex justify-between items-center">
+                    <span class="font-bold text-lg text-cyan-400">${name}</span>
+                    <span class="text-xs text-gray-400">${timestamp}</span>
+                </div>
+                <div class="text-sm text-gray-300 mt-1">${details}</div>
+            `;
             eventLog.prepend(eventItem);
         }
 
@@ -462,6 +613,8 @@
             const w = canvas.width;
             const h = canvas.height;
             canvasCtx.clearRect(0, 0, w, h);
+            
+            // Draw live audio waveform
             canvasCtx.beginPath();
             canvasCtx.strokeStyle = '#38bdf8';
             canvasCtx.lineWidth = 2.5;
@@ -477,6 +630,51 @@
                 canvasCtx.lineTo(x, y);
             }
             canvasCtx.stroke();
+
+            // Draw fingerprint overlay if enabled
+            if (showFingerprintOverlay) {
+                drawFingerprintOverlay();
+            }
+        }
+
+        function drawFingerprintOverlay() {
+            const w = fingerprintCanvas.width;
+            const h = fingerprintCanvas.height;
+            fingerprintCtx.clearRect(0, 0, w, h);
+            
+            let yOffset = 0;
+            const colors = ['#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', '#feca57'];
+            let colorIndex = 0;
+            
+            for (const [name, fingerprintData] of Object.entries(referenceFingerprints)) {
+                const mfccData = fingerprintData.mfcc || fingerprintData; // Handle both formats
+                
+                fingerprintCtx.beginPath();
+                fingerprintCtx.strokeStyle = colors[colorIndex % colors.length];
+                fingerprintCtx.lineWidth = 1.5;
+                fingerprintCtx.globalAlpha = 0.6;
+                
+                const step = w / (mfccData.length - 1);
+                const normalizedData = mfccData.map(val => Math.abs(val) * 10);
+                const maxVal = Math.max(...normalizedData);
+                
+                fingerprintCtx.moveTo(0, h - yOffset - 20);
+                for (let i = 0; i < mfccData.length && i < 50; i++) {
+                    const x = i * step;
+                    const y = h - yOffset - 20 - (normalizedData[i] / maxVal) * 30;
+                    fingerprintCtx.lineTo(x, y);
+                }
+                fingerprintCtx.stroke();
+                
+                // Label
+                fingerprintCtx.fillStyle = colors[colorIndex % colors.length];
+                fingerprintCtx.font = '10px Inter';
+                fingerprintCtx.fillText(name.substring(0, 12), 5, h - yOffset - 5);
+                
+                yOffset += 35;
+                colorIndex++;
+            }
+            fingerprintCtx.globalAlpha = 1.0;
         }
 
         function updateThresholdLine() {
@@ -485,9 +683,10 @@
             thresholdLine.style.bottom = `${percent}%`;
         }
 
+        // Event Listeners
         volumeSlider.addEventListener('input', (e) => {
             const volume = e.target.value / 100;
-            volumeValue.textContent = e.target.value;
+            volumeValue.textContent = e.target.value + '%';
             players.forEach(p => {
                 p.videoElement.volume = volume;
             });
@@ -512,6 +711,47 @@
             updateThresholdLine();
         });
 
+        playTestAudioBtn.addEventListener('click', () => {
+            if (!isPlayingTestAudio) {
+                isPlayingTestAudio = true;
+                playTestAudioBtn.textContent = 'Stop Audio';
+                playTestAudioBtn.classList.replace('bg-purple-600', 'bg-red-600');
+                playTestAudioBtn.classList.replace('hover:bg-purple-700', 'hover:bg-red-700');
+                
+                if (activeAudioSourceKey && players.has(activeAudioSourceKey)) {
+                    const videoElement = players.get(activeAudioSourceKey).videoElement;
+                    videoElement.muted = false;
+                    videoElement.volume = volumeSlider.value / 100;
+                }
+            } else {
+                isPlayingTestAudio = false;
+                playTestAudioBtn.textContent = 'Play Live Audio';
+                playTestAudioBtn.classList.replace('bg-red-600', 'bg-purple-600');
+                playTestAudioBtn.classList.replace('hover:bg-red-700', 'hover:bg-purple-700');
+                
+                if (activeAudioSourceKey && players.has(activeAudioSourceKey)) {
+                    const videoElement = players.get(activeAudioSourceKey).videoElement;
+                    videoElement.muted = true;
+                }
+            }
+        });
+
+        overlayFingerprintBtn.addEventListener('click', () => {
+            showFingerprintOverlay = !showFingerprintOverlay;
+            if (showFingerprintOverlay) {
+                overlayFingerprintBtn.textContent = 'Hide Fingerprints';
+                overlayFingerprintBtn.classList.replace('bg-indigo-600', 'bg-orange-600');
+                overlayFingerprintBtn.classList.replace('hover:bg-indigo-700', 'hover:bg-orange-700');
+                fingerprintCanvas.style.display = 'block';
+            } else {
+                overlayFingerprintBtn.textContent = 'Show Fingerprints';
+                overlayFingerprintBtn.classList.replace('bg-orange-600', 'bg-indigo-600');
+                overlayFingerprintBtn.classList.replace('hover:bg-orange-700', 'hover:bg-indigo-700');
+                fingerprintCanvas.style.display = 'none';
+                fingerprintCtx.clearRect(0, 0, fingerprintCanvas.width, fingerprintCanvas.height);
+            }
+        });
+
         saveThresholdButton.addEventListener('click', async () => {
             const threshold = loudnessSlider.value;
             saveThresholdButton.textContent = 'Saving...';
@@ -522,11 +762,12 @@
                     body: JSON.stringify({ threshold: parseFloat(threshold) })
                 });
                 saveThresholdButton.textContent = 'Saved!';
+                logEvent('Detection settings saved', `Threshold: ${threshold}`);
             } catch (error) {
                 console.error('Failed to save threshold:', error);
                 saveThresholdButton.textContent = 'Error!';
             } finally {
-                setTimeout(() => { saveThresholdButton.textContent = 'Save Threshold'; }, 2000);
+                setTimeout(() => { saveThresholdButton.textContent = 'Save Detection Settings'; }, 2000);
             }
         });
 
