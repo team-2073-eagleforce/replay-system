@@ -2,3 +2,4 @@ add an optional console log for debugging if needed...
 add a section so that I can change the match names. Additionally it shouldn't be specifying the camera name, or it can but then it must display all possible files to be written in a box so that if there are a lot of cameras in the future it will scale in the box and not mess up the page format
 add recordings to a subdirectories of their own
 disable reconnecting client and server side during recordings. can only reconnect if recording is turned off to disable stupid people
+i hate u audio detection

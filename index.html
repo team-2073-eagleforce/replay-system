@@ -524,21 +524,56 @@
 
             let bestMatch = { name: null, distance: Infinity };
             const MATCH_THRESHOLD = 20;
+            let allMatches = []; // Store all matches for visualization
 
             for (const name in referenceFingerprints) {
                 if (name.toLowerCase().includes('start')) {
                     const fingerprintData = referenceFingerprints[name];
                     const refMfcc = fingerprintData.mfcc || fingerprintData;
                     let distance = Math.sqrt(refMfcc.reduce((sum, val, i) => sum + Math.pow(val - liveMfcc[i], 2), 0));
+                    
+                    allMatches.push({ name, distance });
+                    
                     if (distance < bestMatch.distance) {
                         bestMatch = { distance, name };
                     }
                 }
             }
 
+            // Visual feedback for close matches
+            if (showFingerprintOverlay && allMatches.length > 0) {
+                // Sort by best match
+                allMatches.sort((a, b) => a.distance - b.distance);
+                
+                // Update canvas with match confidence indicators
+                const w = canvas.width;
+                const h = canvas.height;
+                
+                canvasCtx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+                canvasCtx.fillRect(5, h - 60, 200, 55);
+                
+                canvasCtx.fillStyle = '#ffffff';
+                canvasCtx.font = 'bold 10px Inter';
+                canvasCtx.fillText('Live Match Analysis:', 10, h - 45);
+                
+                for (let i = 0; i < Math.min(3, allMatches.length); i++) {
+                    const match = allMatches[i];
+                    const confidence = Math.max(0, 100 - (match.distance / MATCH_THRESHOLD) * 100);
+                    const color = confidence > 80 ? '#10b981' : confidence > 50 ? '#f59e0b' : '#ef4444';
+                    
+                    canvasCtx.fillStyle = color;
+                    canvasCtx.font = '9px Inter';
+                    canvasCtx.fillText(
+                        `${match.name.substring(0, 15)}: ${confidence.toFixed(1)}%`, 
+                        10, 
+                        h - 30 + (i * 12)
+                    );
+                }
+            }
+
             if (bestMatch.distance < MATCH_THRESHOLD) {
                 lastMatchTime = Date.now();
-                logEvent(`Audio Detection: ${bestMatch.name}`, bestMatch.distance.toFixed(2));
+                logEvent(`Audio Detection: ${bestMatch.name}`, `Confidence: ${(100 - (bestMatch.distance / MATCH_THRESHOLD) * 100).toFixed(1)}%`);
                 sendMatchEvent('MATCH_START');
             }
         }
@@ -698,68 +733,257 @@
             const h = canvas.height;
             canvasCtx.clearRect(0, 0, w, h);
             
-            // Draw live audio waveform
-            canvasCtx.beginPath();
-            canvasCtx.strokeStyle = '#38bdf8';
-            canvasCtx.lineWidth = 2.5;
-            canvasCtx.lineJoin = 'round';
-            const step = w / (LOUDNESS_HISTORY_LENGTH - 1);
-            let firstLoudness = loudnessHistory[0] || 0;
-            let firstY = h - Math.min(h, (firstLoudness / MAX_LOUDNESS) * h);
-            canvasCtx.moveTo(0, firstY);
-            for (let i = 1; i < loudnessHistory.length; i++) {
-                const loudness = loudnessHistory[i] || 0;
-                const x = i * step;
-                const y = h - Math.min(h, (loudness / MAX_LOUDNESS) * h);
-                canvasCtx.lineTo(x, y);
-            }
-            canvasCtx.stroke();
-
-            // Draw fingerprint overlay if enabled
+            // Always draw fingerprint overlay FIRST if enabled, so it stays behind live audio
             if (showFingerprintOverlay) {
                 drawFingerprintOverlay();
             }
+            
+            // Draw background grid only when fingerprints are NOT shown
+            if (!showFingerprintOverlay) {
+                canvasCtx.strokeStyle = '#374151';
+                canvasCtx.lineWidth = 0.5;
+                canvasCtx.globalAlpha = 0.3;
+                
+                // Horizontal grid lines
+                for (let i = 0; i <= 10; i++) {
+                    const y = (h / 10) * i;
+                    canvasCtx.beginPath();
+                    canvasCtx.moveTo(0, y);
+                    canvasCtx.lineTo(w, y);
+                    canvasCtx.stroke();
+                }
+                
+                // Vertical grid lines
+                for (let i = 0; i <= 10; i++) {
+                    const x = (w / 10) * i;
+                    canvasCtx.beginPath();
+                    canvasCtx.moveTo(x, 0);
+                    canvasCtx.lineTo(x, h);
+                    canvasCtx.stroke();
+                }
+                canvasCtx.globalAlpha = 1.0;
+            }
+            
+            // Draw live audio waveform with gradient
+            if (loudnessHistory.length > 1) {
+                const gradient = canvasCtx.createLinearGradient(0, 0, 0, h);
+                gradient.addColorStop(0, '#38bdf8');
+                gradient.addColorStop(0.5, '#0ea5e9');
+                gradient.addColorStop(1, '#0284c7');
+                
+                canvasCtx.beginPath();
+                canvasCtx.strokeStyle = gradient;
+                canvasCtx.lineWidth = 3;
+                canvasCtx.lineJoin = 'round';
+                canvasCtx.lineCap = 'round';
+                
+                const step = w / (LOUDNESS_HISTORY_LENGTH - 1);
+                let firstLoudness = loudnessHistory[0] || 0;
+                let firstY = h - Math.min(h, (firstLoudness / MAX_LOUDNESS) * h);
+                canvasCtx.moveTo(0, firstY);
+                
+                for (let i = 1; i < loudnessHistory.length; i++) {
+                    const loudness = loudnessHistory[i] || 0;
+                    const x = i * step;
+                    const y = h - Math.min(h, (loudness / MAX_LOUDNESS) * h);
+                    canvasCtx.lineTo(x, y);
+                }
+                canvasCtx.stroke();
+                
+                // Add glow effect
+                canvasCtx.shadowColor = '#38bdf8';
+                canvasCtx.shadowBlur = 10;
+                canvasCtx.stroke();
+                canvasCtx.shadowBlur = 0;
+            }
+
+            // Draw current loudness value
+            if (loudnessHistory.length > 0) {
+                const currentLoudness = loudnessHistory[loudnessHistory.length - 1];
+                canvasCtx.fillStyle = '#fbbf24';
+                canvasCtx.font = 'bold 12px Inter';
+                canvasCtx.fillText(`Live: ${currentLoudness.toFixed(1)}`, w - 80, 20);
+            }
+            
+            // Draw threshold indicator
+            const threshold = parseFloat(loudnessSlider.value);
+            const thresholdY = h - (threshold / MAX_LOUDNESS) * h;
+            canvasCtx.strokeStyle = '#f87171';
+            canvasCtx.lineWidth = 2;
+            canvasCtx.setLineDash([5, 5]);
+            canvasCtx.beginPath();
+            canvasCtx.moveTo(0, thresholdY);
+            canvasCtx.lineTo(w, thresholdY);
+            canvasCtx.stroke();
+            canvasCtx.setLineDash([]);
+            
+            // Threshold label
+            canvasCtx.fillStyle = '#f87171';
+            canvasCtx.font = 'bold 10px Inter';
+            canvasCtx.fillText(`Threshold: ${threshold}`, 5, thresholdY - 5);
         }
 
         function drawFingerprintOverlay() {
-            const w = fingerprintCanvas.width;
-            const h = fingerprintCanvas.height;
-            fingerprintCtx.clearRect(0, 0, w, h);
+            const w = canvas.width;
+            const h = canvas.height;
             
-            let yOffset = 0;
-            const colors = ['#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', '#feca57'];
+            // Draw background grid for better visualization
+            canvasCtx.strokeStyle = '#374151';
+            canvasCtx.lineWidth = 0.5;
+            canvasCtx.globalAlpha = 0.3;
+            
+            // Horizontal grid lines  
+            for (let i = 0; i <= 10; i++) {
+                const y = (h / 10) * i;
+                canvasCtx.beginPath();
+                canvasCtx.moveTo(0, y);
+                canvasCtx.lineTo(w, y);
+                canvasCtx.stroke();
+            }
+            
+            // Vertical grid lines
+            for (let i = 0; i <= 10; i++) {
+                const x = (w / 10) * i;
+                canvasCtx.beginPath();
+                canvasCtx.moveTo(x, 0);
+                canvasCtx.lineTo(x, h);
+                canvasCtx.stroke();
+            }
+            canvasCtx.globalAlpha = 1.0;
+            
+            // Use main canvas for overlay instead of separate canvas for better integration
+            const colors = ['#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', '#feca57', '#ff9ff3', '#54a0ff', '#5f27cd'];
             let colorIndex = 0;
+            let yOffset = 30; // Start below the live audio line
             
-            for (const [name, fingerprintData] of Object.entries(referenceFingerprints)) {
-                const mfccData = fingerprintData.mfcc || fingerprintData; // Handle both formats
+            // Sort fingerprints to show "start" patterns first
+            const sortedFingerprints = Object.entries(referenceFingerprints).sort(([nameA], [nameB]) => {
+                const aIsStart = nameA.toLowerCase().includes('start');
+                const bIsStart = nameB.toLowerCase().includes('start');
+                if (aIsStart && !bIsStart) return -1;
+                if (!aIsStart && bIsStart) return 1;
+                return nameA.localeCompare(nameB);
+            });
+            
+            for (const [name, fingerprintData] of sortedFingerprints) {
+                const mfccData = fingerprintData.mfcc || fingerprintData;
+                const isStartPattern = name.toLowerCase().includes('start');
                 
-                fingerprintCtx.beginPath();
-                fingerprintCtx.strokeStyle = colors[colorIndex % colors.length];
-                fingerprintCtx.lineWidth = 1.5;
-                fingerprintCtx.globalAlpha = 0.6;
+                // Enhanced visualization for start patterns
+                const color = colors[colorIndex % colors.length];
+                const lineWidth = isStartPattern ? 2.5 : 1.5;
+                const alpha = isStartPattern ? 0.9 : 0.6;
                 
-                const step = w / (mfccData.length - 1);
-                const normalizedData = mfccData.map(val => Math.abs(val) * 10);
-                const maxVal = Math.max(...normalizedData);
+                canvasCtx.globalAlpha = alpha;
+                canvasCtx.strokeStyle = color;
+                canvasCtx.lineWidth = lineWidth;
                 
-                fingerprintCtx.moveTo(0, h - yOffset - 20);
-                for (let i = 0; i < mfccData.length && i < 50; i++) {
+                // Convert MFCC coefficients to visual representation
+                canvasCtx.beginPath();
+                const step = w / Math.min(mfccData.length, 50); // Limit to 50 points for clarity
+                
+                // Normalize MFCC data for better visualization
+                const normalizedData = mfccData.slice(0, 50).map(val => {
+                    // MFCC values can be negative, so we need to handle them properly
+                    return Math.abs(val) * 15; // Scale factor for visibility
+                });
+                
+                const maxVal = Math.max(...normalizedData, 1); // Prevent division by zero
+                const baseY = h - yOffset;
+                
+                canvasCtx.moveTo(0, baseY);
+                for (let i = 0; i < normalizedData.length; i++) {
                     const x = i * step;
-                    const y = h - yOffset - 20 - (normalizedData[i] / maxVal) * 30;
-                    fingerprintCtx.lineTo(x, y);
+                    const normalizedVal = (normalizedData[i] / maxVal) * 25; // Max height of 25px
+                    const y = baseY - normalizedVal;
+                    canvasCtx.lineTo(x, y);
                 }
-                fingerprintCtx.stroke();
+                canvasCtx.stroke();
                 
-                // Label
-                fingerprintCtx.fillStyle = colors[colorIndex % colors.length];
-                fingerprintCtx.font = '10px Inter';
-                fingerprintCtx.fillText(name.substring(0, 12), 5, h - yOffset - 5);
+                // Add pattern-specific styling
+                if (isStartPattern) {
+                    // Add dots for start patterns to make them more prominent
+                    canvasCtx.fillStyle = color;
+                    for (let i = 0; i < Math.min(normalizedData.length, 20); i += 3) {
+                        const x = i * step;
+                        const normalizedVal = (normalizedData[i] / maxVal) * 25;
+                        const y = baseY - normalizedVal;
+                        canvasCtx.beginPath();
+                        canvasCtx.arc(x, y, 2, 0, Math.PI * 2);
+                        canvasCtx.fill();
+                    }
+                }
+                
+                // Enhanced label with background
+                canvasCtx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                canvasCtx.fillRect(5, baseY - 20, name.length * 6 + 10, 15);
+                
+                canvasCtx.fillStyle = color;
+                canvasCtx.font = isStartPattern ? 'bold 10px Inter' : '9px Inter';
+                canvasCtx.fillText(
+                    isStartPattern ? `★ ${name}` : name, 
+                    8, 
+                    baseY - 8
+                );
+                
+                // Show match threshold indicator for start patterns
+                if (isStartPattern) {
+                    canvasCtx.fillStyle = '#fbbf24';
+                    canvasCtx.font = '8px Inter';
+                    canvasCtx.fillText('(Detection Pattern)', w - 100, baseY - 8);
+                }
                 
                 yOffset += 35;
                 colorIndex++;
+                
+                // Prevent overflow
+                if (yOffset > h - 40) break;
             }
-            fingerprintCtx.globalAlpha = 1.0;
+            
+            canvasCtx.globalAlpha = 1.0;
+            
+            // Add legend
+            canvasCtx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+            canvasCtx.fillRect(w - 150, 5, 145, 50);
+            
+            canvasCtx.fillStyle = '#ffffff';
+            canvasCtx.font = 'bold 10px Inter';
+            canvasCtx.fillText('Audio Fingerprints:', w - 145, 18);
+            
+            canvasCtx.font = '9px Inter';
+            canvasCtx.fillStyle = '#38bdf8';
+            canvasCtx.fillText('— Live Audio', w - 145, 30);
+            
+            canvasCtx.fillStyle = '#ff6b6b';
+            canvasCtx.fillText('★ Detection Patterns', w - 145, 42);
+            
+            canvasCtx.fillStyle = '#4ecdc4';
+            canvasCtx.fillText('— Reference Patterns', w - 145, 52);
         }
+
+        // Enhanced button event listener with better UI feedback
+        overlayFingerprintBtn.addEventListener('click', () => {
+            showFingerprintOverlay = !showFingerprintOverlay;
+            
+            if (showFingerprintOverlay) {
+                overlayFingerprintBtn.textContent = 'Hide Fingerprints';
+                overlayFingerprintBtn.classList.replace('bg-indigo-600', 'bg-orange-600');
+                overlayFingerprintBtn.classList.replace('hover:bg-indigo-700', 'hover:bg-orange-700');
+                
+                // Log current fingerprints for debugging
+                console.log('[FINGERPRINT] Showing overlay with patterns:', Object.keys(referenceFingerprints));
+                logEvent('Fingerprint Overlay', `Showing ${Object.keys(referenceFingerprints).length} patterns`);
+            } else {
+                overlayFingerprintBtn.textContent = 'Show Fingerprints';
+                overlayFingerprintBtn.classList.replace('bg-orange-600', 'bg-indigo-600');
+                overlayFingerprintBtn.classList.replace('hover:bg-orange-700', 'hover:bg-indigo-700');
+                
+                logEvent('Fingerprint Overlay', 'Hidden');
+            }
+            
+            // Force immediate redraw
+            drawHistogram();
+        });
 
         function updateThresholdLine() {
             const threshold = parseFloat(loudnessSlider.value);
