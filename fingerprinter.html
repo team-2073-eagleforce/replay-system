@@ -34,7 +34,6 @@
         </div>
 
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
-            <!-- Create New Fingerprint -->
             <div class="bg-gray-800 p-6 rounded-xl shadow-lg">
                 <h2 class="text-2xl font-bold mb-4 text-center">Create New Fingerprint</h2>
                 <p class="text-center text-gray-400 mb-6">Upload a short audio file to create a reference fingerprint for match detection.</p>
@@ -45,8 +44,8 @@
                             Fingerprint Name <span class="text-red-400">*</span>
                         </label>
                         <input type="text" id="soundName"
-                            class="w-full p-3 bg-gray-700 border border-gray-600 rounded-md focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                            placeholder="e.g., MATCH_GAME_START, BUZZER_END, etc.">
+                               class="w-full p-3 bg-gray-700 border border-gray-600 rounded-md focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                               placeholder="e.g., MATCH_GAME_START, BUZZER_END, etc.">
                         <p class="text-xs text-gray-400 mt-1">Use descriptive names like "MATCH_GAME_START" for better event logging</p>
                     </div>
 
@@ -55,18 +54,17 @@
                             Audio File <span class="text-red-400">*</span>
                         </label>
                         <input type="file" id="audioFile" accept="audio/*"
-                            class="w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-blue-500 file:text-white hover:file:bg-blue-600">
+                               class="w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-blue-500 file:text-white hover:file:bg-blue-600">
                         <p class="text-xs text-gray-400 mt-1">Supported formats: MP3, WAV (shorter clips work better)</p>
                     </div>
 
                     <div>
                         <label for="description" class="block text-sm font-medium text-gray-300 mb-2">Description (Optional)</label>
                         <textarea id="description" rows="3"
-                            class="w-full p-3 bg-gray-700 border border-gray-600 rounded-md focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                            placeholder="Describe when this audio plays..."></textarea>
+                                  class="w-full p-3 bg-gray-700 border border-gray-600 rounded-md focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                                  placeholder="Describe when this audio plays..."></textarea>
                     </div>
 
-                    <!-- Audio Preview -->
                     <div id="audioPreviewSection" class="hidden">
                         <label class="block text-sm font-medium text-gray-300 mb-2">Audio Preview</label>
                         <div class="waveform-preview" id="waveformPreview"></div>
@@ -78,7 +76,7 @@
 
                 <div class="mt-6">
                     <button id="saveButton"
-                        class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-md transition duration-300 disabled:opacity-50 disabled:cursor-not-allowed">
+                            class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-md transition duration-300 disabled:opacity-50 disabled:cursor-not-allowed">
                         Generate and Save Fingerprint
                     </button>
                 </div>
@@ -86,7 +84,6 @@
                 <div id="statusMessage" class="mt-4 text-center h-6"></div>
             </div>
 
-            <!-- Current Fingerprints -->
             <div class="bg-gray-800 p-6 rounded-xl shadow-lg">
                 <div class="flex justify-between items-center mb-4">
                     <h2 class="text-2xl font-bold">Current Fingerprints</h2>
@@ -95,9 +92,8 @@
                     </button>
                 </div>
                 
-                <div id="fingerprintsList" class="space-y-3 max-h-96 overflow-y-auto">
-                    <!-- Fingerprints will be loaded here -->
-                </div>
+                <div id="fingerprintsList" class="space-y-3 max-h-[30rem] overflow-y-auto">
+                    </div>
 
                 <div class="mt-6 p-4 bg-gray-900 rounded-lg">
                     <h3 class="font-bold mb-2">Usage Tips:</h3>
@@ -124,22 +120,16 @@
         const audioPreviewSection = document.getElementById('audioPreviewSection');
         const audioPreview = document.getElementById('audioPreview');
         const waveformPreview = document.getElementById('waveformPreview');
-
-        // Use regular AudioContext for decoding (more reliable)
         const audioContext = new (window.AudioContext || window.webkitAudioContext)();
 
         function extractMFCCFingerprint(audioBuffer) {
             const channelData = audioBuffer.getChannelData(0);
-            const bufferSize = 512; // Power of 2, required by Meyda
-            const hopSize = 256; // 50% overlap for better coverage
-
+            const bufferSize = 512;
+            const hopSize = 256;
             const mfccFrames = [];
 
-            // Process audio in chunks with overlap
             for (let i = 0; i < channelData.length - bufferSize; i += hopSize) {
                 const chunk = channelData.slice(i, i + bufferSize);
-
-                // Ensure chunk is exactly bufferSize (pad with zeros if needed)
                 const paddedChunk = new Float32Array(bufferSize);
                 paddedChunk.set(chunk);
 
@@ -157,7 +147,6 @@
                 throw new Error('No MFCC features could be extracted from the audio');
             }
 
-            // Average all MFCC frames to create a single fingerprint
             const numCoefficients = mfccFrames[0].length;
             const averagedMfcc = new Array(numCoefficients).fill(0);
 
@@ -188,7 +177,6 @@
 
             ctx.fillStyle = '#374151';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
-
             ctx.beginPath();
             ctx.moveTo(0, amp);
             ctx.strokeStyle = '#3b82f6';
@@ -214,6 +202,9 @@
         async function loadFingerprints() {
             try {
                 const response = await fetch('/api/fingerprints');
+                if (!response.ok) {
+                    throw new Error(`API request failed with status ${response.status}`);
+                }
                 const fingerprints = await response.json();
 
                 fingerprintsList.innerHTML = '';
@@ -223,19 +214,29 @@
                     return;
                 }
 
-                Object.entries(fingerprints).forEach(([name, mfccData]) => {
+                Object.entries(fingerprints).forEach(([name, fingerprintData]) => {
                     const item = document.createElement('div');
                     item.className = 'fingerprint-item bg-gray-900 p-4 rounded-lg border border-gray-600';
                     
+                    // ✅ FIX: Access the nested .mfcc property from the fingerprint object
+                    const mfccArray = fingerprintData.mfcc;
+
                     const detectionType = name.toLowerCase().includes('start') ? 
                         '<span class="bg-green-500 text-white px-2 py-1 rounded text-xs">Auto-Detection</span>' :
                         '<span class="bg-gray-500 text-white px-2 py-1 rounded text-xs">Reference Only</span>';
+
+                    let mfccPreviewHTML = '<span class="text-red-400">Invalid or missing MFCC data</span>';
+
+                    // ✅ FIX: Check the new mfccArray variable for being a valid array
+                    if (Array.isArray(mfccArray) && mfccArray.length > 0) {
+                        mfccPreviewHTML = `[${mfccArray.slice(0, 5).map(x => x.toFixed(2)).join(', ')}...]`;
+                    }
 
                     item.innerHTML = `
                         <div class="flex justify-between items-start mb-2">
                             <div class="flex-1">
                                 <h3 class="font-bold text-lg text-cyan-400">${name}</h3>
-                                <p class="text-sm text-gray-400">MFCC Coefficients: ${mfccData.length}</p>
+                                <p class="text-sm text-gray-400">MFCC Coefficients: ${Array.isArray(mfccArray) ? mfccArray.length : 0}</p>
                                 <div class="mt-2">${detectionType}</div>
                             </div>
                             <button class="delete-fingerprint bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded text-sm" data-name="${name}">
@@ -243,18 +244,17 @@
                             </button>
                         </div>
                         <div class="text-xs text-gray-500">
-                            Preview: [${mfccData.slice(0, 5).map(x => x.toFixed(2)).join(', ')}...]
+                            Preview: ${mfccPreviewHTML}
                         </div>
                     `;
 
-                    // Add delete functionality
                     item.querySelector('.delete-fingerprint').onclick = () => deleteFingerprint(name);
                     fingerprintsList.appendChild(item);
                 });
 
             } catch (error) {
                 console.error('Failed to load fingerprints:', error);
-                fingerprintsList.innerHTML = '<div class="text-red-400 text-center p-4">Error loading fingerprints.</div>';
+                fingerprintsList.innerHTML = `<div class="text-red-400 text-center p-4">Error loading fingerprints: ${error.message}</div>`;
             }
         }
 
@@ -270,14 +270,14 @@
 
                 if (response.ok) {
                     statusMessage.textContent = `Deleted fingerprint: ${name}`;
-                    statusMessage.style.color = '#86efac'; // green-300
-                    loadFingerprints(); // Refresh the list
+                    statusMessage.style.color = '#86efac';
+                    loadFingerprints();
                 } else {
                     throw new Error('Failed to delete fingerprint');
                 }
             } catch (error) {
                 statusMessage.textContent = `Error deleting fingerprint: ${error.message}`;
-                statusMessage.style.color = '#fca5a5'; // red-300
+                statusMessage.style.color = '#fca5a5';
             }
 
             setTimeout(() => {
@@ -292,13 +292,13 @@
 
             if (!soundName || !file) {
                 statusMessage.textContent = 'Please provide a name and a file.';
-                statusMessage.style.color = '#fca5a5'; // red-300
+                statusMessage.style.color = '#fca5a5';
                 return;
             }
 
             saveButton.disabled = true;
             statusMessage.textContent = 'Processing audio file...';
-            statusMessage.style.color = '#67e8f9'; // cyan-300
+            statusMessage.style.color = '#67e8f9';
 
             try {
                 const arrayBuffer = await file.arrayBuffer();
@@ -312,7 +312,6 @@
                 const fingerprint = extractMFCCFingerprint(audioBuffer);
 
                 statusMessage.textContent = 'Saving fingerprint...';
-                // Send the fingerprint to the server
                 const response = await fetch('/api/fingerprints', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -330,21 +329,19 @@
 
                 const result = await response.json();
                 statusMessage.textContent = `Success! Saved fingerprint for "${result.name}".`;
-                statusMessage.style.color = '#86efac'; // green-300
+                statusMessage.style.color = '#86efac';
                 
-                // Clear form
                 soundNameInput.value = '';
                 audioFileInput.value = '';
                 descriptionInput.value = '';
                 audioPreviewSection.classList.add('hidden');
                 
-                // Refresh fingerprints list
                 loadFingerprints();
 
             } catch (error) {
                 console.error('Audio processing error:', error);
                 statusMessage.textContent = `Error: ${error.message}`;
-                statusMessage.style.color = '#fca5a5'; // red-300
+                statusMessage.style.color = '#fca5a5';
             } finally {
                 saveButton.disabled = false;
                 setTimeout(() => {
@@ -353,7 +350,6 @@
             }
         });
 
-        // Enhanced file validation and auto-populate name
         audioFileInput.addEventListener('change', async (event) => {
             const file = event.target.files[0];
             if (file) {
@@ -365,20 +361,17 @@
                     audioPreviewSection.classList.add('hidden');
                 } else {
                     statusMessage.textContent = '';
-                    // Auto-populate sound name from filename (remove extension)
                     const fileName = file.name;
                     const nameWithoutExtension = fileName.substring(0, fileName.lastIndexOf('.')) || fileName;
                     if (!soundNameInput.value) {
-                        soundNameInput.value = nameWithoutExtension.toUpperCase().replace(/[^A-Z0-9]/g, '_');
+                        soundNameInput.value = nameWithoutExtension.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
                     }
 
-                    // Show audio preview
                     try {
                         const url = URL.createObjectURL(file);
                         audioPreview.src = url;
                         audioPreviewSection.classList.remove('hidden');
 
-                        // Generate waveform
                         const arrayBuffer = await file.arrayBuffer();
                         const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
                         drawWaveform(audioBuffer);
