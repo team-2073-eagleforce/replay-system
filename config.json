@@ -2,13 +2,13 @@
   "cameras": {
     "xs-max-1": {
       "name": "xs max 1",
-      "ip": "192.168.15.113",
+      "ip": "192.168.15.50",
       "port": 8081,
       "path": "/live.flv"
     },
     "xs-max-2": {
       "name": "xs max 2",
-      "ip": "192.168.15.51",
+      "ip": "192.168.15.112",
       "port": 8081,
       "path": "/live.flv"
     }

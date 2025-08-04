@@ -3,84 +3,405 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Match Recordings</title>
+    <title>Match Recordings Playback</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         body { font-family: 'Inter', sans-serif; }
+        .match-group {
+            border: 2px solid #374151;
+            border-radius: 8px;
+            margin-bottom: 16px;
+            overflow: hidden;
+        }
+        .match-group.active {
+            border-color: #3b82f6;
+        }
+        .match-header {
+            background: linear-gradient(135deg, #1f2937 0%, #111827 100%);
+            padding: 12px 16px;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .match-header:hover {
+            background: linear-gradient(135deg, #374151 0%, #1f2937 100%);
+        }
+        .camera-list {
+            background: #0f172a;
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease;
+        }
+        .camera-list.expanded {
+            max-height: 400px;
+        }
+        .camera-item {
+            padding: 8px 16px;
+            border-bottom: 1px solid #1e293b;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .camera-item:hover {
+            background: #1e293b;
+        }
+        .camera-item.active {
+            background: #1e40af;
+        }
+        .filter-section {
+            background: #1f2937;
+            padding: 16px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
     </style>
 </head>
 <body class="bg-gray-800 text-white p-8">
 
-    <div class="max-w-4xl mx-auto">
-        <h1 class="text-4xl font-bold text-center mb-8">Match Recordings</h1>
+    <div class="max-w-6xl mx-auto">
+        <div class="flex justify-between items-center mb-8">
+            <h1 class="text-4xl font-bold">Match Recording Playback</h1>
+            <a href="/" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-white">← Back to Live View</a>
+        </div>
 
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+        <!-- Filter Section -->
+        <div class="filter-section">
+            <h3 class="text-lg font-bold mb-4">Filter Recordings</h3>
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div>
+                    <label for="matchFilter" class="block text-sm font-medium mb-2">Match Number:</label>
+                    <input type="number" id="matchFilter" placeholder="e.g., 1" class="w-full p-2 bg-gray-700 border border-gray-600 rounded">
+                </div>
+                <div>
+                    <label for="cameraFilter" class="block text-sm font-medium mb-2">Camera:</label>
+                    <select id="cameraFilter" class="w-full p-2 bg-gray-700 border border-gray-600 rounded">
+                        <option value="">All Cameras</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="dateFilter" class="block text-sm font-medium mb-2">Date:</label>
+                    <input type="date" id="dateFilter" class="w-full p-2 bg-gray-700 border border-gray-600 rounded">
+                </div>
+                <div class="flex items-end">
+                    <button id="clearFilters" class="w-full bg-red-600 hover:bg-red-700 px-4 py-2 rounded">Clear Filters</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
             <!-- Video Player -->
-            <div class="md:col-span-2 bg-black rounded-lg shadow-lg overflow-hidden">
-                <video id="videoPlayer" class="w-full h-full" controls autoplay>
-                    Your browser does not support the video tag.
-                </video>
+            <div class="lg:col-span-2">
+                <div class="bg-black rounded-lg shadow-lg overflow-hidden">
+                    <video id="videoPlayer" class="w-full h-full" controls autoplay>
+                        Your browser does not support the video tag.
+                    </video>
+                </div>
+                
+                <!-- Video Info -->
+                <div id="videoInfo" class="mt-4 p-4 bg-gray-900 rounded-lg">
+                    <h3 class="text-lg font-bold text-cyan-400">No video selected</h3>
+                    <p class="text-gray-400">Select a recording from the playlist to begin playback</p>
+                </div>
             </div>
 
-            <!-- Playlist -->
+            <!-- Match Groups Playlist -->
             <div class="bg-gray-900/50 p-4 rounded-lg">
-                <h2 class="text-xl font-bold mb-4">Playlist</h2>
-                <ul id="playlist" class="space-y-2 h-96 overflow-y-auto">
-                    <!-- Recordings will be listed here -->
-                </ul>
+                <h2 class="text-xl font-bold mb-4">Match Recordings</h2>
+                <div id="matchGroups" class="h-96 overflow-y-auto">
+                    <!-- Match groups will be populated here -->
+                </div>
             </div>
         </div>
     </div>
 
     <script>
         const videoPlayer = document.getElementById('videoPlayer');
-        const playlist = document.getElementById('playlist');
+        const videoInfo = document.getElementById('videoInfo');
+        const matchGroups = document.getElementById('matchGroups');
+        const matchFilter = document.getElementById('matchFilter');
+        const cameraFilter = document.getElementById('cameraFilter');
+        const dateFilter = document.getElementById('dateFilter');
+        const clearFilters = document.getElementById('clearFilters');
+
+        let allRecordings = [];
+        let groupedRecordings = {};
+        let currentActiveGroup = null;
 
         async function loadRecordings() {
             try {
                 const response = await fetch('/api/recordings');
-                const files = await response.json();
+                allRecordings = await response.json();
 
-                if (files.length === 0) {
-                    playlist.innerHTML = '<li class="text-gray-400">No recordings found.</li>';
+                if (allRecordings.length === 0) {
+                    matchGroups.innerHTML = '<div class="text-gray-400 text-center p-4">No recordings found.</div>';
                     return;
                 }
 
-                playlist.innerHTML = ''; // Clear existing list
-                files.forEach(file => {
-                    const li = document.createElement('li');
-                    const a = document.createElement('a');
-                    a.href = '#';
-                    a.textContent = file;
-                    a.className = 'block p-2 rounded-md hover:bg-blue-600 transition-colors';
-                    a.onclick = (e) => {
-                        e.preventDefault();
-                        playVideo(file);
-                        // Style the active item
-                        document.querySelectorAll('#playlist a').forEach(el => el.classList.remove('bg-blue-700'));
-                        a.classList.add('bg-blue-700');
-                    };
-                    li.appendChild(a);
-                    playlist.appendChild(li);
-                });
-                
-                // Autoplay the first video
-                if (files.length > 0) {
-                    playVideo(files[0]);
-                    playlist.querySelector('a').classList.add('bg-blue-700');
-                }
+                populateCameraFilter();
+                groupRecordings();
+                renderMatchGroups();
 
             } catch (error) {
                 console.error('Failed to load recordings:', error);
-                playlist.innerHTML = '<li class="text-red-400">Error loading recordings.</li>';
+                matchGroups.innerHTML = '<div class="text-red-400 text-center p-4">Error loading recordings.</div>';
             }
         }
 
-        function playVideo(filename) {
+        function populateCameraFilter() {
+            const cameras = new Set();
+            allRecordings.forEach(file => {
+                const match = file.match(/match\d+_(.+)\.mp4$/);
+                if (match) {
+                    cameras.add(match[1]);
+                }
+            });
+
+            cameraFilter.innerHTML = '<option value="">All Cameras</option>';
+            cameras.forEach(camera => {
+                const option = document.createElement('option');
+                option.value = camera;
+                option.textContent = camera;
+                cameraFilter.appendChild(option);
+            });
+        }
+
+        function groupRecordings() {
+            groupedRecordings = {};
+            
+            allRecordings.forEach(file => {
+                const matchRegex = /match(\d+)_(.+)\.mp4$/;
+                const match = file.match(matchRegex);
+                
+                if (match) {
+                    const matchNumber = parseInt(match[1]);
+                    const camera = match[2];
+                    
+                    if (!groupedRecordings[matchNumber]) {
+                        groupedRecordings[matchNumber] = {
+                            matchNumber,
+                            cameras: {},
+                            timestamp: file.split('_')[0] // Extract timestamp if available
+                        };
+                    }
+                    
+                    groupedRecordings[matchNumber].cameras[camera] = file;
+                }
+            });
+        }
+
+        function renderMatchGroups() {
+            const filteredGroups = applyFilters();
+            matchGroups.innerHTML = '';
+
+            if (Object.keys(filteredGroups).length === 0) {
+                matchGroups.innerHTML = '<div class="text-gray-400 text-center p-4">No matches found with current filters.</div>';
+                return;
+            }
+
+            Object.values(filteredGroups)
+                .sort((a, b) => b.matchNumber - a.matchNumber)
+                .forEach(matchGroup => {
+                    const groupElement = createMatchGroupElement(matchGroup);
+                    matchGroups.appendChild(groupElement);
+                });
+
+            // Auto-expand and play first match
+            const firstGroup = Object.values(filteredGroups)[0];
+            if (firstGroup) {
+                expandMatchGroup(firstGroup.matchNumber);
+                const firstCamera = Object.keys(firstGroup.cameras)[0];
+                if (firstCamera) {
+                    playVideo(firstGroup.cameras[firstCamera], firstGroup.matchNumber, firstCamera);
+                }
+            }
+        }
+
+        function createMatchGroupElement(matchGroup) {
+            const groupDiv = document.createElement('div');
+            groupDiv.className = 'match-group';
+            groupDiv.id = `match-group-${matchGroup.matchNumber}`;
+
+            const header = document.createElement('div');
+            header.className = 'match-header';
+            header.innerHTML = `
+                <div>
+                    <h3 class="font-bold text-lg">Match ${matchGroup.matchNumber}</h3>
+                    <p class="text-sm text-gray-400">${Object.keys(matchGroup.cameras).length} camera(s)</p>
+                </div>
+                <svg class="w-5 h-5 transform transition-transform" id="arrow-${matchGroup.matchNumber}" fill="currentColor" viewBox="0 0 20 20">
+                    <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd" />
+                </svg>
+            `;
+
+            const cameraList = document.createElement('div');
+            cameraList.className = 'camera-list';
+            cameraList.id = `cameras-${matchGroup.matchNumber}`;
+
+            Object.entries(matchGroup.cameras).forEach(([camera, filename]) => {
+                const cameraItem = document.createElement('div');
+                cameraItem.className = 'camera-item';
+                cameraItem.innerHTML = `
+                    <div>
+                        <span class="font-medium">${camera}</span>
+                        <div class="text-xs text-gray-400">${filename}</div>
+                    </div>
+                    <button class="bg-blue-600 hover:bg-blue-700 px-3 py-1 rounded text-xs">Play</button>
+                `;
+                
+                cameraItem.onclick = () => playVideo(filename, matchGroup.matchNumber, camera);
+                cameraList.appendChild(cameraItem);
+            });
+
+            header.onclick = () => toggleMatchGroup(matchGroup.matchNumber);
+            
+            groupDiv.appendChild(header);
+            groupDiv.appendChild(cameraList);
+            
+            return groupDiv;
+        }
+
+        function toggleMatchGroup(matchNumber) {
+            const cameraList = document.getElementById(`cameras-${matchNumber}`);
+            const arrow = document.getElementById(`arrow-${matchNumber}`);
+            const group = document.getElementById(`match-group-${matchNumber}`);
+            
+            if (cameraList.classList.contains('expanded')) {
+                cameraList.classList.remove('expanded');
+                arrow.style.transform = 'rotate(0deg)';
+                group.classList.remove('active');
+            } else {
+                // Close other groups
+                document.querySelectorAll('.camera-list.expanded').forEach(list => {
+                    list.classList.remove('expanded');
+                });
+                document.querySelectorAll('.match-group.active').forEach(g => {
+                    g.classList.remove('active');
+                });
+                document.querySelectorAll('[id^="arrow-"]').forEach(a => {
+                    a.style.transform = 'rotate(0deg)';
+                });
+                
+                // Open this group
+                cameraList.classList.add('expanded');
+                arrow.style.transform = 'rotate(180deg)';
+                group.classList.add('active');
+                currentActiveGroup = matchNumber;
+            }
+        }
+
+        function expandMatchGroup(matchNumber) {
+            const cameraList = document.getElementById(`cameras-${matchNumber}`);
+            const arrow = document.getElementById(`arrow-${matchNumber}`);
+            const group = document.getElementById(`match-group-${matchNumber}`);
+            
+            cameraList.classList.add('expanded');
+            arrow.style.transform = 'rotate(180deg)';
+            group.classList.add('active');
+            currentActiveGroup = matchNumber;
+        }
+
+        function playVideo(filename, matchNumber, camera) {
             videoPlayer.src = `/recordings/${filename}`;
             videoPlayer.load();
             videoPlayer.play();
+
+            // Update video info
+            videoInfo.innerHTML = `
+                <h3 class="text-lg font-bold text-cyan-400">Match ${matchNumber} - ${camera}</h3>
+                <p class="text-gray-400">Playing: ${filename}</p>
+                <div class="mt-2 text-sm text-gray-500">
+                    <span>File size: Loading...</span> | 
+                    <span>Duration: Loading...</span>
+                </div>
+            `;
+
+            // Highlight active camera
+            document.querySelectorAll('.camera-item').forEach(item => {
+                item.classList.remove('active');
+            });
+            event.currentTarget.classList.add('active');
+
+            // Load additional file info
+            loadVideoMetadata(filename);
         }
+
+        function loadVideoMetadata(filename) {
+            fetch(`/api/video-info/${filename}`)
+                .then(response => response.json())
+                .then(data => {
+                    const sizeInMB = (data.size / (1024 * 1024)).toFixed(2);
+                    videoInfo.querySelector('.text-gray-500').innerHTML = `
+                        <span>File size: ${sizeInMB} MB</span> | 
+                        <span>Duration: ${formatDuration(videoPlayer.duration)}</span>
+                    `;
+                })
+                .catch(() => {
+                    // Fallback to basic info
+                    videoInfo.querySelector('.text-gray-500').innerHTML = `
+                        <span>File info unavailable</span>
+                    `;
+                });
+        }
+
+        function formatDuration(seconds) {
+            if (isNaN(seconds)) return 'Unknown';
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.floor(seconds % 60);
+            return `${mins}:${secs.toString().padStart(2, '0')}`;
+        }
+
+        function applyFilters() {
+            let filtered = { ...groupedRecordings };
+
+            if (matchFilter.value) {
+                const matchNum = parseInt(matchFilter.value);
+                filtered = Object.fromEntries(
+                    Object.entries(filtered).filter(([key, group]) => group.matchNumber === matchNum)
+                );
+            }
+
+            if (cameraFilter.value) {
+                Object.keys(filtered).forEach(key => {
+                    const group = filtered[key];
+                    const filteredCameras = Object.fromEntries(
+                        Object.entries(group.cameras).filter(([camera, filename]) => camera === cameraFilter.value)
+                    );
+                    if (Object.keys(filteredCameras).length === 0) {
+                        delete filtered[key];
+                    } else {
+                        filtered[key].cameras = filteredCameras;
+                    }
+                });
+            }
+
+            if (dateFilter.value) {
+                const selectedDate = new Date(dateFilter.value).toISOString().split('T')[0];
+                Object.keys(filtered).forEach(key => {
+                    const group = filtered[key];
+                    const hasMatchingDate = Object.values(group.cameras).some(filename => {
+                        return filename.includes(selectedDate.replace(/-/g, ''));
+                    });
+                    if (!hasMatchingDate) {
+                        delete filtered[key];
+                    }
+                });
+            }
+
+            return filtered;
+        }
+
+        // Event listeners for filters
+        matchFilter.addEventListener('input', renderMatchGroups);
+        cameraFilter.addEventListener('change', renderMatchGroups);
+        dateFilter.addEventListener('change', renderMatchGroups);
+        clearFilters.addEventListener('click', () => {
+            matchFilter.value = '';
+            cameraFilter.value = '';
+            dateFilter.value = '';
+            renderMatchGroups();
+        });
 
         // Load recordings when the page opens
         loadRecordings();
