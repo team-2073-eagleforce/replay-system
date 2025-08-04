@@ -66,6 +66,37 @@
             font-weight: bold;
             z-index: 10;
         }
+        .fingerprint-filter {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+            margin-bottom: 8px;
+            max-height: 100px;
+            overflow-y: auto;
+        }
+        .filter-chip {
+            padding: 2px 8px;
+            font-size: 10px;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 1px solid;
+        }
+        .filter-chip.active {
+            transform: scale(1.05);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+        }
+        .detection-confidence {
+            position: absolute;
+            top: 5px;
+            right: 5px;
+            background: rgba(0,0,0,0.8);
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 10px;
+            color: white;
+            z-index: 15;
+        }
     </style>
 </head>
 <body class="bg-gray-800 text-white flex flex-col min-h-screen p-4">
@@ -124,10 +155,10 @@
                 <input id="volumeSlider" type="range" min="0" max="100" value="50" class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer">
                 
                 <div class="flex items-center justify-between">
-                    <label for="loudnessSlider" class="text-sm font-medium text-gray-300">Detection Threshold:</label>
-                    <span id="loudnessValue" class="font-bold text-cyan-400">20</span>
+                    <label for="matchThresholdSlider" class="text-sm font-medium text-gray-300">Match Sensitivity:</label>
+                    <span id="matchThresholdValue" class="font-bold text-cyan-400">80</span>
                 </div>
-                <input id="loudnessSlider" type="range" min="0" max="100" value="20" class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+                <input id="matchThresholdSlider" type="range" min="50" max="95" value="80" class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer">
                 
                 <div class="flex gap-2">
                     <button id="playTestAudioBtn" class="flex-1 bg-purple-600 hover:bg-purple-700 text-white py-2 px-3 rounded text-sm">
@@ -138,10 +169,17 @@
                     </button>
                 </div>
                 
+                <!-- Fingerprint Filters Panel -->
+                <div id="fingerprintFilters" class="hidden">
+                    <label class="block text-sm font-medium text-gray-300 mb-2">Filter Fingerprints:</label>
+                    <div id="filterChips" class="fingerprint-filter"></div>
+                </div>
+                
                 <div id="canvasContainer">
                     <canvas id="histogramCanvas"></canvas>
                     <canvas id="fingerprintOverlay" class="fingerprint-overlay"></canvas>
                     <div id="thresholdLine"></div>
+                    <div id="detectionConfidence" class="detection-confidence hidden">No Match</div>
                 </div>
                 <button id="saveThresholdButton" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-md transition duration-300">Save Detection Settings</button>
             </div>
@@ -163,19 +201,22 @@
         const endMatchBtn = document.getElementById('endMatchBtn');
         const resetMatchBtn = document.getElementById('resetMatchBtn');
         const reconnectAllBtn = document.getElementById('reconnectAllBtn');
-        const loudnessSlider = document.getElementById('loudnessSlider');
-        const loudnessValue = document.getElementById('loudnessValue');
+        const matchThresholdSlider = document.getElementById('matchThresholdSlider');
+        const matchThresholdValue = document.getElementById('matchThresholdValue');
         const volumeSlider = document.getElementById('volumeSlider');
         const volumeValue = document.getElementById('volumeValue');
         const gridSlider = document.getElementById('gridSlider');
         const playTestAudioBtn = document.getElementById('playTestAudioBtn');
         const overlayFingerprintBtn = document.getElementById('overlayFingerprintBtn');
+        const fingerprintFilters = document.getElementById('fingerprintFilters');
+        const filterChips = document.getElementById('filterChips');
         const canvas = document.getElementById('histogramCanvas');
         const canvasCtx = canvas.getContext('2d');
         const fingerprintCanvas = document.getElementById('fingerprintOverlay');
         const fingerprintCtx = fingerprintCanvas.getContext('2d');
         const thresholdLine = document.getElementById('thresholdLine');
         const saveThresholdButton = document.getElementById('saveThresholdButton');
+        const detectionConfidence = document.getElementById('detectionConfidence');
 
         let players = new Map();
         let audioSources = new Map();
@@ -189,6 +230,9 @@
         let isPlayingTestAudio = false;
         let showFingerprintOverlay = false;
         let matchEndedBy = 'timer'; // 'timer' or 'manual'
+        let activeFilters = new Set(); // Track which fingerprints to show
+        let persistentOverlayData = {}; // Store overlay data to prevent overwriting
+        let currentMatchData = {}; // Store current matching results
         
         const LOUDNESS_HISTORY_LENGTH = 50;
         const MAX_LOUDNESS = 100;
@@ -211,9 +255,12 @@
                     fetch('/api/threshold').then(res => res.json())
                 ]);
                 referenceFingerprints = fingerprints;
-                loudnessSlider.value = thresholdData.threshold;
-                loudnessValue.textContent = thresholdData.threshold;
+                matchThresholdSlider.value = thresholdData.matchThreshold || 80;
+                matchThresholdValue.textContent = matchThresholdSlider.value;
                 updateThresholdLine();
+                
+                // Initialize fingerprint filters
+                initializeFingerprintFilters();
                 
                 console.log('Loaded cameras:', cameras);
                 for (const key in cameras) {
@@ -230,6 +277,90 @@
             } catch (error) {
                 console.error("Initialization failed:", error);
                 logEvent('System Error', 'Failed to initialize: ' + error.message);
+            }
+        }
+
+        function initializeFingerprintFilters() {
+            filterChips.innerHTML = '';
+            activeFilters.clear();
+            
+            const colors = ['#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', '#feca57', '#ff9ff3', '#54a0ff', '#5f27cd'];
+            let colorIndex = 0;
+            
+            // Add "All" chip
+            const allChip = document.createElement('div');
+            allChip.className = 'filter-chip active';
+            allChip.style.backgroundColor = '#6b7280';
+            allChip.style.borderColor = '#6b7280';
+            allChip.style.color = 'white';
+            allChip.textContent = 'All';
+            allChip.onclick = () => toggleFilter('all', allChip);
+            filterChips.appendChild(allChip);
+            activeFilters.add('all');
+            
+            // Add individual fingerprint chips
+            for (const name in referenceFingerprints) {
+                const chip = document.createElement('div');
+                const color = colors[colorIndex % colors.length];
+                const isStartPattern = name.toLowerCase().includes('start');
+                
+                chip.className = 'filter-chip';
+                chip.style.backgroundColor = isStartPattern ? color : 'rgba(107, 114, 128, 0.3)';
+                chip.style.borderColor = color;
+                chip.style.color = isStartPattern ? 'white' : color;
+                chip.textContent = isStartPattern ? `★ ${name}` : name;
+                chip.dataset.fingerprint = name;
+                chip.onclick = () => toggleFilter(name, chip);
+                
+                filterChips.appendChild(chip);
+                colorIndex++;
+            }
+        }
+
+        function toggleFilter(filterName, chipElement) {
+            if (filterName === 'all') {
+                // Toggle all filters
+                if (activeFilters.has('all')) {
+                    activeFilters.clear();
+                    document.querySelectorAll('.filter-chip').forEach(chip => {
+                        chip.classList.remove('active');
+                    });
+                } else {
+                    activeFilters.clear();
+                    activeFilters.add('all');
+                    document.querySelectorAll('.filter-chip').forEach(chip => {
+                        chip.classList.add('active');
+                    });
+                    // Also add all individual filters
+                    for (const name in referenceFingerprints) {
+                        activeFilters.add(name);
+                    }
+                }
+            } else {
+                // Toggle individual filter
+                const allChip = document.querySelector('.filter-chip');
+                
+                if (activeFilters.has(filterName)) {
+                    activeFilters.delete(filterName);
+                    chipElement.classList.remove('active');
+                    allChip.classList.remove('active');
+                    activeFilters.delete('all');
+                } else {
+                    activeFilters.add(filterName);
+                    chipElement.classList.add('active');
+                    
+                    // Check if all individual filters are active
+                    const allIndividualActive = Object.keys(referenceFingerprints).every(name => activeFilters.has(name));
+                    if (allIndividualActive) {
+                        activeFilters.add('all');
+                        allChip.classList.add('active');
+                    }
+                }
+            }
+            
+            // Redraw with new filters
+            if (showFingerprintOverlay) {
+                drawHistogram();
             }
         }
 
@@ -496,7 +627,7 @@
                             drawHistogram();
                         }
 
-                        // Match detection - removed the debounce delay issue
+                        // IMPROVED: Only do fingerprint matching, not loudness-based detection
                         if (currentMatchState === MATCH_STATES.WAITING && features?.mfcc) {
                             compareAndFindMatch(features.mfcc);
                         }
@@ -523,57 +654,58 @@
             if (Date.now() - lastMatchTime < 2000) return; 
 
             let bestMatch = { name: null, distance: Infinity };
-            const MATCH_THRESHOLD = 20;
+            const matchThreshold = parseFloat(matchThresholdSlider.value);
+            const MATCH_THRESHOLD = (100 - matchThreshold) * 0.5; // Convert percentage to distance threshold
             let allMatches = []; // Store all matches for visualization
 
+            // IMPROVED: Only check fingerprints that contain "start" for triggering matches
             for (const name in referenceFingerprints) {
-                if (name.toLowerCase().includes('start')) {
-                    const fingerprintData = referenceFingerprints[name];
-                    const refMfcc = fingerprintData.mfcc || fingerprintData;
-                    let distance = Math.sqrt(refMfcc.reduce((sum, val, i) => sum + Math.pow(val - liveMfcc[i], 2), 0));
-                    
-                    allMatches.push({ name, distance });
-                    
-                    if (distance < bestMatch.distance) {
-                        bestMatch = { distance, name };
-                    }
+                const fingerprintData = referenceFingerprints[name];
+                const refMfcc = fingerprintData.mfcc || fingerprintData;
+                
+                // Calculate Euclidean distance between MFCC vectors
+                let distance = 0;
+                const minLength = Math.min(refMfcc.length, liveMfcc.length);
+                for (let i = 0; i < minLength; i++) {
+                    distance += Math.pow(refMfcc[i] - liveMfcc[i], 2);
+                }
+                distance = Math.sqrt(distance);
+                
+                // Normalize by vector length
+                distance = distance / Math.sqrt(minLength);
+                
+                allMatches.push({ name, distance, confidence: Math.max(0, 100 - (distance / MATCH_THRESHOLD) * 100) });
+                
+                // Only trigger on "start" patterns with good confidence
+                if (name.toLowerCase().includes('start') && distance < bestMatch.distance) {
+                    bestMatch = { distance, name };
                 }
             }
 
-            // Visual feedback for close matches
-            if (showFingerprintOverlay && allMatches.length > 0) {
-                // Sort by best match
-                allMatches.sort((a, b) => a.distance - b.distance);
-                
-                // Update canvas with match confidence indicators
-                const w = canvas.width;
-                const h = canvas.height;
-                
-                canvasCtx.fillStyle = 'rgba(0, 0, 0, 0.8)';
-                canvasCtx.fillRect(5, h - 60, 200, 55);
-                
-                canvasCtx.fillStyle = '#ffffff';
-                canvasCtx.font = 'bold 10px Inter';
-                canvasCtx.fillText('Live Match Analysis:', 10, h - 45);
-                
-                for (let i = 0; i < Math.min(3, allMatches.length); i++) {
-                    const match = allMatches[i];
-                    const confidence = Math.max(0, 100 - (match.distance / MATCH_THRESHOLD) * 100);
-                    const color = confidence > 80 ? '#10b981' : confidence > 50 ? '#f59e0b' : '#ef4444';
-                    
-                    canvasCtx.fillStyle = color;
-                    canvasCtx.font = '9px Inter';
-                    canvasCtx.fillText(
-                        `${match.name.substring(0, 15)}: ${confidence.toFixed(1)}%`, 
-                        10, 
-                        h - 30 + (i * 12)
-                    );
-                }
+            // Store current match data for persistent overlay
+            currentMatchData = {
+                allMatches: allMatches.sort((a, b) => a.distance - b.distance),
+                bestMatch,
+                timestamp: Date.now()
+            };
+
+            // Update confidence display
+            if (allMatches.length > 0) {
+                const topMatch = allMatches[0];
+                const confidence = Math.max(0, 100 - (topMatch.distance / MATCH_THRESHOLD) * 100);
+                detectionConfidence.textContent = `${topMatch.name}: ${confidence.toFixed(1)}%`;
+                detectionConfidence.className = `detection-confidence ${confidence > 70 ? 'text-green-400' : confidence > 40 ? 'text-yellow-400' : 'text-red-400'}`;
+                detectionConfidence.classList.remove('hidden');
+            } else {
+                detectionConfidence.textContent = 'No Match';
+                detectionConfidence.className = 'detection-confidence text-gray-400';
             }
 
-            if (bestMatch.distance < MATCH_THRESHOLD) {
+            // IMPROVED: Only trigger match if it's a "start" pattern with high confidence
+            if (bestMatch.name && bestMatch.name.toLowerCase().includes('start') && bestMatch.distance < MATCH_THRESHOLD) {
+                const confidence = Math.max(0, 100 - (bestMatch.distance / MATCH_THRESHOLD) * 100);
                 lastMatchTime = Date.now();
-                logEvent(`Audio Detection: ${bestMatch.name}`, `Confidence: ${(100 - (bestMatch.distance / MATCH_THRESHOLD) * 100).toFixed(1)}%`);
+                logEvent(`FRC Start Horn Detected: ${bestMatch.name}`, `Confidence: ${confidence.toFixed(1)}%`);
                 sendMatchEvent('MATCH_START');
             }
         }
@@ -600,7 +732,7 @@
                         currentMatchState = MATCH_STATES.RECORDING;
                         startMatchTimer();
                         // Don't stop listening - just update UI
-                        logEvent(`Match ${currentMatchNumber} Started`, isManual ? 'Manual' : 'Audio');
+                        logEvent(`Match ${currentMatchNumber} Started`, isManual ? 'Manual' : 'FRC Start Horn');
                     } else {
                         currentMatchState = MATCH_STATES.WAITING;
                         stopMatchTimer();
@@ -647,6 +779,12 @@
                     players.get(activeAudioSourceKey).videoElement.muted = false;
                 }
             }
+        });
+
+        // Match threshold slider event listener
+        matchThresholdSlider.addEventListener('input', (e) => {
+            matchThresholdValue.textContent = e.target.value;
+            updateThresholdLine();
         });
 
         function activateAudioOnInteraction() {
@@ -733,9 +871,9 @@
             const h = canvas.height;
             canvasCtx.clearRect(0, 0, w, h);
             
-            // Always draw fingerprint overlay FIRST if enabled, so it stays behind live audio
+            // IMPROVED: Always draw fingerprint overlay FIRST with persistence
             if (showFingerprintOverlay) {
-                drawFingerprintOverlay();
+                drawPersistentFingerprintOverlay();
             }
             
             // Draw background grid only when fingerprints are NOT shown
@@ -805,9 +943,9 @@
                 canvasCtx.fillText(`Live: ${currentLoudness.toFixed(1)}`, w - 80, 20);
             }
             
-            // Draw threshold indicator
-            const threshold = parseFloat(loudnessSlider.value);
-            const thresholdY = h - (threshold / MAX_LOUDNESS) * h;
+            // Draw match threshold indicator (visual only, not used for triggering)
+            const threshold = parseFloat(matchThresholdSlider.value);
+            const thresholdY = h - (threshold / 100) * h;
             canvasCtx.strokeStyle = '#f87171';
             canvasCtx.lineWidth = 2;
             canvasCtx.setLineDash([5, 5]);
@@ -820,10 +958,15 @@
             // Threshold label
             canvasCtx.fillStyle = '#f87171';
             canvasCtx.font = 'bold 10px Inter';
-            canvasCtx.fillText(`Threshold: ${threshold}`, 5, thresholdY - 5);
+            canvasCtx.fillText(`Match Sensitivity: ${threshold}%`, 5, thresholdY - 5);
+
+            // IMPROVED: Draw real-time match confidence overlay
+            if (showFingerprintOverlay && currentMatchData.allMatches) {
+                drawMatchConfidenceOverlay();
+            }
         }
 
-        function drawFingerprintOverlay() {
+        function drawPersistentFingerprintOverlay() {
             const w = canvas.width;
             const h = canvas.height;
             
@@ -851,7 +994,7 @@
             }
             canvasCtx.globalAlpha = 1.0;
             
-            // Use main canvas for overlay instead of separate canvas for better integration
+            // IMPROVED: Draw filtered fingerprints
             const colors = ['#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', '#feca57', '#ff9ff3', '#54a0ff', '#5f27cd'];
             let colorIndex = 0;
             let yOffset = 30; // Start below the live audio line
@@ -866,6 +1009,12 @@
             });
             
             for (const [name, fingerprintData] of sortedFingerprints) {
+                // IMPROVED: Filter based on active filters
+                if (!activeFilters.has('all') && !activeFilters.has(name)) {
+                    colorIndex++;
+                    continue;
+                }
+                
                 const mfccData = fingerprintData.mfcc || fingerprintData;
                 const isStartPattern = name.toLowerCase().includes('start');
                 
@@ -944,7 +1093,7 @@
             
             // Add legend
             canvasCtx.fillStyle = 'rgba(0, 0, 0, 0.8)';
-            canvasCtx.fillRect(w - 150, 5, 145, 50);
+            canvasCtx.fillRect(w - 150, 5, 145, 65);
             
             canvasCtx.fillStyle = '#ffffff';
             canvasCtx.font = 'bold 10px Inter';
@@ -955,10 +1104,55 @@
             canvasCtx.fillText('— Live Audio', w - 145, 30);
             
             canvasCtx.fillStyle = '#ff6b6b';
-            canvasCtx.fillText('★ Detection Patterns', w - 145, 42);
+            canvasCtx.fillText('★ FRC Start Patterns', w - 145, 42);
             
             canvasCtx.fillStyle = '#4ecdc4';
-            canvasCtx.fillText('— Reference Patterns', w - 145, 52);
+            canvasCtx.fillText('— Reference Patterns', w - 145, 54);
+
+            canvasCtx.fillStyle = '#fbbf24';
+            canvasCtx.fillText(`Active Filters: ${activeFilters.size - (activeFilters.has('all') ? 1 : 0)}`, w - 145, 66);
+        }
+
+        function drawMatchConfidenceOverlay() {
+            const w = canvas.width;
+            const h = canvas.height;
+            
+            if (!currentMatchData.allMatches || currentMatchData.allMatches.length === 0) return;
+            
+            // IMPROVED: Persistent match confidence display
+            canvasCtx.fillStyle = 'rgba(0, 0, 0, 0.85)';
+            canvasCtx.fillRect(5, h - 80, 220, 75);
+            
+            canvasCtx.fillStyle = '#ffffff';
+            canvasCtx.font = 'bold 11px Inter';
+            canvasCtx.fillText('Live Match Analysis:', 10, h - 65);
+            
+            // Show top 4 matches with confidence bars
+            for (let i = 0; i < Math.min(4, currentMatchData.allMatches.length); i++) {
+                const match = currentMatchData.allMatches[i];
+                const confidence = match.confidence;
+                const isStartPattern = match.name.toLowerCase().includes('start');
+                const color = confidence > 80 ? '#10b981' : confidence > 60 ? '#f59e0b' : confidence > 40 ? '#f97316' : '#ef4444';
+                
+                const y = h - 50 + (i * 12);
+                
+                // Confidence bar background
+                canvasCtx.fillStyle = 'rgba(255, 255, 255, 0.1)';
+                canvasCtx.fillRect(10, y - 8, 100, 8);
+                
+                // Confidence bar
+                canvasCtx.fillStyle = color;
+                canvasCtx.fillRect(10, y - 8, (confidence / 100) * 100, 8);
+                
+                // Pattern name and confidence
+                canvasCtx.fillStyle = isStartPattern ? '#fbbf24' : '#ffffff';
+                canvasCtx.font = isStartPattern ? 'bold 9px Inter' : '9px Inter';
+                canvasCtx.fillText(
+                    `${isStartPattern ? '★ ' : ''}${match.name.substring(0, 12)}: ${confidence.toFixed(1)}%`, 
+                    115, 
+                    y - 1
+                );
+            }
         }
 
         // Enhanced button event listener with better UI feedback
@@ -969,6 +1163,7 @@
                 overlayFingerprintBtn.textContent = 'Hide Fingerprints';
                 overlayFingerprintBtn.classList.replace('bg-indigo-600', 'bg-orange-600');
                 overlayFingerprintBtn.classList.replace('hover:bg-indigo-700', 'hover:bg-orange-700');
+                fingerprintFilters.classList.remove('hidden');
                 
                 // Log current fingerprints for debugging
                 console.log('[FINGERPRINT] Showing overlay with patterns:', Object.keys(referenceFingerprints));
@@ -977,6 +1172,8 @@
                 overlayFingerprintBtn.textContent = 'Show Fingerprints';
                 overlayFingerprintBtn.classList.replace('bg-orange-600', 'bg-indigo-600');
                 overlayFingerprintBtn.classList.replace('hover:bg-orange-700', 'hover:bg-indigo-700');
+                fingerprintFilters.classList.add('hidden');
+                detectionConfidence.classList.add('hidden');
                 
                 logEvent('Fingerprint Overlay', 'Hidden');
             }
@@ -986,8 +1183,8 @@
         });
 
         function updateThresholdLine() {
-            const threshold = parseFloat(loudnessSlider.value);
-            const percent = (threshold / MAX_LOUDNESS) * 100;
+            const threshold = parseFloat(matchThresholdSlider.value);
+            const percent = threshold;
             thresholdLine.style.bottom = `${percent}%`;
         }
 
@@ -998,79 +1195,54 @@
             players.forEach(p => {
                 p.videoElement.volume = volume;
             });
-             if (audioContext && audioContext.state === 'suspended') {
-                audioContext.resume().then(() => {
-                    if (activeAudioSourceKey && players.has(activeAudioSourceKey)) {
-                        players.get(activeAudioSourceKey).videoElement.muted = false;
-                    }
-                });
-            } else if (activeAudioSourceKey && players.has(activeAudioSourceKey)) {
-                 players.get(activeAudioSourceKey).videoElement.muted = false;
-            }
         });
 
         gridSlider.addEventListener('input', (e) => {
-            const cols = e.target.value;
-            videoGrid.className = `grid grid-cols-1 md:grid-cols-${cols} gap-4`;
+            const cols = parseInt(e.target.value);
+            videoGrid.className = `grid gap-4 ${cols === 1 ? 'grid-cols-1' : cols === 2 ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-1 md:grid-cols-2 lg:grid-cols-3'}`;
         });
 
-        loudnessSlider.addEventListener('input', () => {
-            loudnessValue.textContent = loudnessSlider.value;
-            updateThresholdLine();
-        });
-
-        playTestAudioBtn.addEventListener('click', () => {
-            if (!isPlayingTestAudio) {
-                isPlayingTestAudio = true;
-                playTestAudioBtn.textContent = 'Stop Audio';
-                playTestAudioBtn.classList.replace('bg-purple-600', 'bg-red-600');
-                playTestAudioBtn.classList.replace('hover:bg-purple-700', 'hover:bg-red-700');
-                
+        playTestAudioBtn.addEventListener('click', async () => {
+            if (isPlayingTestAudio) return;
+            
+            isPlayingTestAudio = true;
+            playTestAudioBtn.textContent = 'Playing...';
+            playTestAudioBtn.disabled = true;
+            
+            try {
+                // Force unmute the active audio source for testing
                 if (activeAudioSourceKey && players.has(activeAudioSourceKey)) {
-                    const videoElement = players.get(activeAudioSourceKey).videoElement;
+                    const { videoElement } = players.get(activeAudioSourceKey);
                     videoElement.muted = false;
-                    videoElement.volume = volumeSlider.value / 100;
+                    
+                    // Brief unmute period for testing
+                    setTimeout(() => {
+                        videoElement.muted = false; // Keep unmuted for live audio monitoring
+                        isPlayingTestAudio = false;
+                        playTestAudioBtn.textContent = 'Play Live Audio';
+                        playTestAudioBtn.disabled = false;
+                        logEvent('Live Audio Test', 'Audio source activated for monitoring');
+                    }, 3000);
                 }
-            } else {
+            } catch (error) {
+                console.error('Error playing test audio:', error);
                 isPlayingTestAudio = false;
                 playTestAudioBtn.textContent = 'Play Live Audio';
-                playTestAudioBtn.classList.replace('bg-red-600', 'bg-purple-600');
-                playTestAudioBtn.classList.replace('hover:bg-red-700', 'hover:bg-purple-700');
-                
-                if (activeAudioSourceKey && players.has(activeAudioSourceKey)) {
-                    const videoElement = players.get(activeAudioSourceKey).videoElement;
-                    videoElement.muted = true;
-                }
-            }
-        });
-
-        overlayFingerprintBtn.addEventListener('click', () => {
-            showFingerprintOverlay = !showFingerprintOverlay;
-            if (showFingerprintOverlay) {
-                overlayFingerprintBtn.textContent = 'Hide Fingerprints';
-                overlayFingerprintBtn.classList.replace('bg-indigo-600', 'bg-orange-600');
-                overlayFingerprintBtn.classList.replace('hover:bg-indigo-700', 'hover:bg-orange-700');
-                fingerprintCanvas.style.display = 'block';
-            } else {
-                overlayFingerprintBtn.textContent = 'Show Fingerprints';
-                overlayFingerprintBtn.classList.replace('bg-orange-600', 'bg-indigo-600');
-                overlayFingerprintBtn.classList.replace('hover:bg-orange-700', 'hover:bg-indigo-700');
-                fingerprintCanvas.style.display = 'none';
-                fingerprintCtx.clearRect(0, 0, fingerprintCanvas.width, fingerprintCanvas.height);
+                playTestAudioBtn.disabled = false;
             }
         });
 
         saveThresholdButton.addEventListener('click', async () => {
-            const threshold = loudnessSlider.value;
             saveThresholdButton.textContent = 'Saving...';
             try {
+                const threshold = parseFloat(matchThresholdSlider.value);
                 await fetch('/api/threshold', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ threshold: parseFloat(threshold) })
+                    body: JSON.stringify({ matchThreshold: threshold })
                 });
                 saveThresholdButton.textContent = 'Saved!';
-                logEvent('Detection settings saved', `Threshold: ${threshold}`);
+                logEvent('Detection settings saved', `Match Sensitivity: ${threshold}%`);
             } catch (error) {
                 console.error('Failed to save threshold:', error);
                 saveThresholdButton.textContent = 'Error!';
