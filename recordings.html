@@ -56,6 +56,16 @@
             border-radius: 8px;
             margin-bottom: 20px;
         }
+        .match-type-badge {
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 9999px;
+            font-weight: bold;
+        }
+        .type-practice { background-color: #059669; color: white; }
+        .type-quals { background-color: #dc2626; color: white; }
+        .type-semis { background-color: #ea580c; color: white; }
+        .type-finals { background-color: #7c3aed; color: white; }
     </style>
 </head>
 <body class="bg-gray-800 text-white p-8">
@@ -75,14 +85,20 @@
                     <input type="number" id="matchFilter" placeholder="e.g., 1" class="w-full p-2 bg-gray-700 border border-gray-600 rounded">
                 </div>
                 <div>
+                    <label for="matchTypeFilter" class="block text-sm font-medium mb-2">Match Type:</label>
+                    <select id="matchTypeFilter" class="w-full p-2 bg-gray-700 border border-gray-600 rounded">
+                        <option value="">All Types</option>
+                        <option value="P">Practice</option>
+                        <option value="Q">Qualification</option>
+                        <option value="SD">Semifinals</option>
+                        <option value="F">Finals</option>
+                    </select>
+                </div>
+                <div>
                     <label for="cameraFilter" class="block text-sm font-medium mb-2">Camera:</label>
                     <select id="cameraFilter" class="w-full p-2 bg-gray-700 border border-gray-600 rounded">
                         <option value="">All Cameras</option>
                     </select>
-                </div>
-                <div>
-                    <label for="dateFilter" class="block text-sm font-medium mb-2">Date:</label>
-                    <input type="date" id="dateFilter" class="w-full p-2 bg-gray-700 border border-gray-600 rounded">
                 </div>
                 <div class="flex items-end">
                     <button id="clearFilters" class="w-full bg-red-600 hover:bg-red-700 px-4 py-2 rounded">Clear Filters</button>
@@ -121,8 +137,8 @@
         const videoInfo = document.getElementById('videoInfo');
         const matchGroups = document.getElementById('matchGroups');
         const matchFilter = document.getElementById('matchFilter');
+        const matchTypeFilter = document.getElementById('matchTypeFilter');
         const cameraFilter = document.getElementById('cameraFilter');
-        const dateFilter = document.getElementById('dateFilter');
         const clearFilters = document.getElementById('clearFilters');
 
         let allRecordings = [];
@@ -152,14 +168,16 @@
         function populateCameraFilter() {
             const cameras = new Set();
             allRecordings.forEach(file => {
-                const match = file.match(/match\d+_(.+)\.mp4$/);
+                // Parse filename format: P1_xs-max-1_2025-08-05T21-24-58.mp4
+                const match = file.match(/^([PQF]|SD)(\d+)_(.+?)_(.+)\.mp4$/);
                 if (match) {
-                    cameras.add(match[1]);
+                    const camera = match[3]; // xs-max-1
+                    cameras.add(camera);
                 }
             });
 
             cameraFilter.innerHTML = '<option value="">All Cameras</option>';
-            cameras.forEach(camera => {
+            Array.from(cameras).sort().forEach(camera => {
                 const option = document.createElement('option');
                 option.value = camera;
                 option.textContent = camera;
@@ -167,26 +185,60 @@
             });
         }
 
+        function parseFilename(filename) {
+            // Parse format: P1_xs-max-1_2025-08-05T21-24-58.mp4
+            const match = filename.match(/^([PQF]|SD)(\d+)_(.+?)_(.+)\.mp4$/);
+            if (match) {
+                return {
+                    matchType: match[1],     // P, Q, SD, F
+                    matchNumber: parseInt(match[2]), // 1, 2, 3, etc.
+                    camera: match[3],       // xs-max-1
+                    timestamp: match[4]     // 2025-08-05T21-24-58
+                };
+            }
+            return null;
+        }
+
+        function getMatchTypeDisplay(type) {
+            const typeMap = {
+                'P': 'Practice',
+                'Q': 'Qualification', 
+                'SD': 'Semifinals',
+                'F': 'Finals'
+            };
+            return typeMap[type] || type;
+        }
+
+        function getMatchTypeBadgeClass(type) {
+            const classMap = {
+                'P': 'type-practice',
+                'Q': 'type-quals',
+                'SD': 'type-semis', 
+                'F': 'type-finals'
+            };
+            return classMap[type] || 'type-practice';
+        }
+
         function groupRecordings() {
             groupedRecordings = {};
             
             allRecordings.forEach(file => {
-                const matchRegex = /match(\d+)_(.+)\.mp4$/;
-                const match = file.match(matchRegex);
+                const parsed = parseFilename(file);
                 
-                if (match) {
-                    const matchNumber = parseInt(match[1]);
-                    const camera = match[2];
+                if (parsed) {
+                    const { matchType, matchNumber, camera, timestamp } = parsed;
+                    const groupKey = `${matchType}${matchNumber}`;
                     
-                    if (!groupedRecordings[matchNumber]) {
-                        groupedRecordings[matchNumber] = {
+                    if (!groupedRecordings[groupKey]) {
+                        groupedRecordings[groupKey] = {
                             matchNumber,
+                            matchType,
                             cameras: {},
-                            timestamp: file.split('_')[0] // Extract timestamp if available
+                            timestamp
                         };
                     }
                     
-                    groupedRecordings[matchNumber].cameras[camera] = file;
+                    groupedRecordings[groupKey].cameras[camera] = file;
                 }
             });
         }
@@ -200,8 +252,15 @@
                 return;
             }
 
+            // Sort by match type then by match number (descending)
             Object.values(filteredGroups)
-                .sort((a, b) => b.matchNumber - a.matchNumber)
+                .sort((a, b) => {
+                    if (a.matchType !== b.matchType) {
+                        const typeOrder = { 'P': 0, 'Q': 1, 'SD': 2, 'F': 3 };
+                        return (typeOrder[a.matchType] || 999) - (typeOrder[b.matchType] || 999);
+                    }
+                    return b.matchNumber - a.matchNumber;
+                })
                 .forEach(matchGroup => {
                     const groupElement = createMatchGroupElement(matchGroup);
                     matchGroups.appendChild(groupElement);
@@ -210,34 +269,43 @@
             // Auto-expand and play first match
             const firstGroup = Object.values(filteredGroups)[0];
             if (firstGroup) {
-                expandMatchGroup(firstGroup.matchNumber);
+                const groupKey = `${firstGroup.matchType}${firstGroup.matchNumber}`;
+                expandMatchGroup(groupKey);
                 const firstCamera = Object.keys(firstGroup.cameras)[0];
                 if (firstCamera) {
-                    playVideo(firstGroup.cameras[firstCamera], firstGroup.matchNumber, firstCamera);
+                    playVideo(firstGroup.cameras[firstCamera], firstGroup.matchNumber, firstGroup.matchType, firstCamera);
                 }
             }
         }
 
         function createMatchGroupElement(matchGroup) {
+            const groupKey = `${matchGroup.matchType}${matchGroup.matchNumber}`;
             const groupDiv = document.createElement('div');
             groupDiv.className = 'match-group';
-            groupDiv.id = `match-group-${matchGroup.matchNumber}`;
+            groupDiv.id = `match-group-${groupKey}`;
 
             const header = document.createElement('div');
             header.className = 'match-header';
+            
+            const typeDisplay = getMatchTypeDisplay(matchGroup.matchType);
+            const badgeClass = getMatchTypeBadgeClass(matchGroup.matchType);
+            
             header.innerHTML = `
                 <div>
-                    <h3 class="font-bold text-lg">Match ${matchGroup.matchNumber}</h3>
+                    <h3 class="font-bold text-lg flex items-center gap-2">
+                        ${matchGroup.matchType}${matchGroup.matchNumber}
+                        <span class="match-type-badge ${badgeClass}">${typeDisplay}</span>
+                    </h3>
                     <p class="text-sm text-gray-400">${Object.keys(matchGroup.cameras).length} camera(s)</p>
                 </div>
-                <svg class="w-5 h-5 transform transition-transform" id="arrow-${matchGroup.matchNumber}" fill="currentColor" viewBox="0 0 20 20">
+                <svg class="w-5 h-5 transform transition-transform" id="arrow-${groupKey}" fill="currentColor" viewBox="0 0 20 20">
                     <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd" />
                 </svg>
             `;
 
             const cameraList = document.createElement('div');
             cameraList.className = 'camera-list';
-            cameraList.id = `cameras-${matchGroup.matchNumber}`;
+            cameraList.id = `cameras-${groupKey}`;
 
             Object.entries(matchGroup.cameras).forEach(([camera, filename]) => {
                 const cameraItem = document.createElement('div');
@@ -250,11 +318,11 @@
                     <button class="bg-blue-600 hover:bg-blue-700 px-3 py-1 rounded text-xs">Play</button>
                 `;
                 
-                cameraItem.onclick = () => playVideo(filename, matchGroup.matchNumber, camera);
+                cameraItem.onclick = () => playVideo(filename, matchGroup.matchNumber, matchGroup.matchType, camera);
                 cameraList.appendChild(cameraItem);
             });
 
-            header.onclick = () => toggleMatchGroup(matchGroup.matchNumber);
+            header.onclick = () => toggleMatchGroup(groupKey);
             
             groupDiv.appendChild(header);
             groupDiv.appendChild(cameraList);
@@ -262,10 +330,10 @@
             return groupDiv;
         }
 
-        function toggleMatchGroup(matchNumber) {
-            const cameraList = document.getElementById(`cameras-${matchNumber}`);
-            const arrow = document.getElementById(`arrow-${matchNumber}`);
-            const group = document.getElementById(`match-group-${matchNumber}`);
+        function toggleMatchGroup(groupKey) {
+            const cameraList = document.getElementById(`cameras-${groupKey}`);
+            const arrow = document.getElementById(`arrow-${groupKey}`);
+            const group = document.getElementById(`match-group-${groupKey}`);
             
             if (cameraList.classList.contains('expanded')) {
                 cameraList.classList.remove('expanded');
@@ -287,29 +355,33 @@
                 cameraList.classList.add('expanded');
                 arrow.style.transform = 'rotate(180deg)';
                 group.classList.add('active');
-                currentActiveGroup = matchNumber;
+                currentActiveGroup = groupKey;
             }
         }
 
-        function expandMatchGroup(matchNumber) {
-            const cameraList = document.getElementById(`cameras-${matchNumber}`);
-            const arrow = document.getElementById(`arrow-${matchNumber}`);
-            const group = document.getElementById(`match-group-${matchNumber}`);
+        function expandMatchGroup(groupKey) {
+            const cameraList = document.getElementById(`cameras-${groupKey}`);
+            const arrow = document.getElementById(`arrow-${groupKey}`);
+            const group = document.getElementById(`match-group-${groupKey}`);
             
-            cameraList.classList.add('expanded');
-            arrow.style.transform = 'rotate(180deg)';
-            group.classList.add('active');
-            currentActiveGroup = matchNumber;
+            if (cameraList && arrow && group) {
+                cameraList.classList.add('expanded');
+                arrow.style.transform = 'rotate(180deg)';
+                group.classList.add('active');
+                currentActiveGroup = groupKey;
+            }
         }
 
-        function playVideo(filename, matchNumber, camera) {
+        function playVideo(filename, matchNumber, matchType, camera) {
             videoPlayer.src = `/recordings/${filename}`;
             videoPlayer.load();
             videoPlayer.play();
 
+            const typeDisplay = getMatchTypeDisplay(matchType);
+            
             // Update video info
             videoInfo.innerHTML = `
-                <h3 class="text-lg font-bold text-cyan-400">Match ${matchNumber} - ${camera}</h3>
+                <h3 class="text-lg font-bold text-cyan-400">${matchType}${matchNumber} (${typeDisplay}) - ${camera}</h3>
                 <p class="text-gray-400">Playing: ${filename}</p>
                 <div class="mt-2 text-sm text-gray-500">
                     <span>File size: Loading...</span> | 
@@ -362,6 +434,12 @@
                 );
             }
 
+            if (matchTypeFilter.value) {
+                filtered = Object.fromEntries(
+                    Object.entries(filtered).filter(([key, group]) => group.matchType === matchTypeFilter.value)
+                );
+            }
+
             if (cameraFilter.value) {
                 Object.keys(filtered).forEach(key => {
                     const group = filtered[key];
@@ -376,35 +454,23 @@
                 });
             }
 
-            if (dateFilter.value) {
-                const selectedDate = new Date(dateFilter.value).toISOString().split('T')[0];
-                Object.keys(filtered).forEach(key => {
-                    const group = filtered[key];
-                    const hasMatchingDate = Object.values(group.cameras).some(filename => {
-                        return filename.includes(selectedDate.replace(/-/g, ''));
-                    });
-                    if (!hasMatchingDate) {
-                        delete filtered[key];
-                    }
-                });
-            }
-
             return filtered;
         }
 
         // Event listeners for filters
         matchFilter.addEventListener('input', renderMatchGroups);
+        matchTypeFilter.addEventListener('change', renderMatchGroups);
         cameraFilter.addEventListener('change', renderMatchGroups);
-        dateFilter.addEventListener('change', renderMatchGroups);
         clearFilters.addEventListener('click', () => {
             matchFilter.value = '';
+            matchTypeFilter.value = '';
             cameraFilter.value = '';
-            dateFilter.value = '';
             renderMatchGroups();
         });
 
         // Load recordings when the page opens
         loadRecordings();
     </script>
+
 </body>
 </html>

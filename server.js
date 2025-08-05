@@ -234,9 +234,18 @@ let recordingProcesses = new Map();
 let matchStopTimeout = null;
 let gameState = 'WAITING'; // 'WAITING', 'RECORDING'
 let currentMatchNumber = 1;
+let currentMatchType = 'practice'; // 'practice', 'quals', 'semifinals', 'finals'
 let matchStartTime = null;
 let matchEndedBy = 'timer'; // 'timer' or 'manual'
 const streamManager = new StreamManager();
+
+// Match type configurations
+const MATCH_TYPES = {
+    practice: { label: 'Practice', prefix: 'P' },
+    quals: { label: 'Qualifications', prefix: 'Q' },
+    semifinals: { label: 'Semi-Finals', prefix: 'SF' },
+    finals: { label: 'Finals', prefix: 'F' }
+};
 
 if (!fs.existsSync(RECORDINGS_DIR)) fs.mkdirSync(RECORDINGS_DIR);
 
@@ -245,11 +254,13 @@ try {
     if (fs.existsSync(MATCH_STATE_PATH)) {
         const matchState = JSON.parse(fs.readFileSync(MATCH_STATE_PATH));
         currentMatchNumber = matchState.currentMatchNumber || 1;
-        console.log(`Loaded match state: Next match will be #${currentMatchNumber}`);
+        currentMatchType = matchState.currentMatchType || 'practice';
+        console.log(`Loaded match state: Next match will be ${MATCH_TYPES[currentMatchType].prefix}${currentMatchNumber}`);
     }
 } catch (error) {
-    console.error('Could not read match state, starting from match 1');
+    console.error('Could not read match state, starting from P1');
     currentMatchNumber = 1;
+    currentMatchType = 'practice';
 }
 
 // Save match state
@@ -257,6 +268,7 @@ function saveMatchState() {
     try {
         fs.writeFileSync(MATCH_STATE_PATH, JSON.stringify({
             currentMatchNumber,
+            currentMatchType,
             lastUpdate: new Date().toISOString()
         }));
     } catch (error) {
@@ -282,7 +294,13 @@ try {
 }
 
 // --- Enhanced Recording & Event Functions ---
-function startRecording(cameraKey) {
+function generateFileName(cameraKey, matchNumber, matchType) {
+    const timestamp = new Date().toISOString().replace(/:/g, '-').slice(0, -5);
+    const matchTypeConfig = MATCH_TYPES[matchType] || MATCH_TYPES.practice;
+    return `${matchTypeConfig.prefix}${matchNumber}_${cameraKey}_${timestamp}.mp4`;
+}
+
+function startRecording(cameraKey, matchNumber, matchType) {
     if (recordingProcesses.has(cameraKey)) {
         console.log(`[RECORDING] Recording already active for ${cameraKey}`);
         return;
@@ -292,10 +310,9 @@ function startRecording(cameraKey) {
     if (!camera) return console.error(`[RECORDING] Error: Camera key "${cameraKey}" not found.`);
     
     const streamUrl = `http://${camera.ip}:${camera.port}${camera.path}`;
-    const timestamp = new Date().toISOString().replace(/:/g, '-').slice(0, -5);
+    const fileName = generateFileName(cameraKey, matchNumber, matchType);
+    const outputPath = path.join(RECORDINGS_DIR, fileName);
     
-    // Enhanced filename format: match{number}_{camera}_{timestamp}.mp4
-    const outputPath = path.join(RECORDINGS_DIR, `match${currentMatchNumber}_${cameraKey}_${timestamp}.mp4`);
     console.log(`[RECORDING] Starting recording for "${camera.name}" to ${outputPath}`);
     
     const ffmpegArgs = [
@@ -306,7 +323,14 @@ function startRecording(cameraKey) {
     ];
     
     const ffmpegProcess = spawn('ffmpeg', ffmpegArgs, { shell: true, stdio: 'pipe' });
-    recordingProcesses.set(cameraKey, { process: ffmpegProcess, outputPath, startTime: Date.now() });
+    recordingProcesses.set(cameraKey, { 
+        process: ffmpegProcess, 
+        outputPath, 
+        fileName,
+        startTime: Date.now(),
+        matchNumber,
+        matchType
+    });
 
     ffmpegProcess.stderr.on('data', (data) => {
         const output = data.toString();
@@ -319,7 +343,7 @@ function startRecording(cameraKey) {
         const recordingInfo = recordingProcesses.get(cameraKey);
         if (recordingInfo) {
             const duration = (Date.now() - recordingInfo.startTime) / 1000;
-            console.log(`[RECORDING] Completed: ${recordingInfo.outputPath} (${duration.toFixed(1)}s)`);
+            console.log(`[RECORDING] Completed: ${recordingInfo.fileName} (${duration.toFixed(1)}s)`);
         }
         recordingProcesses.delete(cameraKey);
     });
@@ -334,58 +358,102 @@ function stopAllRecordings() {
     if (recordingProcesses.size === 0) return;
     console.log('[RECORDING] Stopping all recordings...');
     
+    const recordingFiles = [];
     for (const [cameraKey, recordingInfo] of recordingProcesses.entries()) {
+        recordingFiles.push(recordingInfo.fileName);
         try {
             recordingInfo.process.stdin.write('q\n');
         } catch (err) {
             recordingInfo.process.kill('SIGTERM');
         }
     }
+    
+    // Log all files that were recorded
+    if (recordingFiles.length > 0) {
+        console.log(`[RECORDING] Stopped recordings: ${recordingFiles.join(', ')}`);
+    }
+    
     recordingProcesses.clear();
+    return recordingFiles;
 }
 
 function handleMatchEvent(eventType, payload = {}) {
-    const { matchNumber, isManual } = payload;
+    const { matchNumber, matchType, isManual } = payload;
+    const useMatchNumber = matchNumber || currentMatchNumber;
+    const useMatchType = matchType || currentMatchType;
+    const matchTypeConfig = MATCH_TYPES[useMatchType];
     
     if (eventType === 'MATCH_START') {
         if (gameState === 'RECORDING') return;
         if (matchStopTimeout) clearTimeout(matchStopTimeout);
         
-        console.log(`[EVENT] Match ${currentMatchNumber} start triggered ${isManual ? '(Manual)' : '(Audio Detection)'}.`);
+        console.log(`[EVENT] ${matchTypeConfig.label} ${useMatchNumber} start triggered ${isManual ? '(Manual)' : '(Audio Detection)'}.`);
         gameState = 'RECORDING';
         matchStartTime = Date.now();
         matchEndedBy = 'timer'; // Default assumption
+        currentMatchNumber = useMatchNumber;
+        currentMatchType = useMatchType;
         
-        Object.keys(cameraConfig).forEach(startRecording);
+        // Start recording for all cameras with the specified match configuration
+        Object.keys(cameraConfig).forEach(cameraKey => {
+            startRecording(cameraKey, useMatchNumber, useMatchType);
+        });
         
         matchStopTimeout = setTimeout(() => {
-            console.log(`[EVENT] Match ${currentMatchNumber} timer finished. Stopping recordings.`);
+            console.log(`[EVENT] ${matchTypeConfig.label} ${useMatchNumber} timer finished. Stopping recordings.`);
             matchEndedBy = 'timer';
-            stopAllRecordings();
+            const recordedFiles = stopAllRecordings();
             gameState = 'WAITING';
             matchStopTimeout = null;
             
-            // Increment match number for next match
-            currentMatchNumber++;
+            console.log(`[EVENT] Match completed. Files recorded: ${recordedFiles ? recordedFiles.join(', ') : 'None'}`);
+            
+            // Don't auto-increment here - let the client handle it
             saveMatchState();
         }, MATCH_DURATION_MS);
 
     } else if (eventType === 'MATCH_ABORT') {
-        console.log(`[EVENT] Match ${currentMatchNumber} abort triggered ${isManual ? '(Manual)' : '(System)'}.`);
+        console.log(`[EVENT] ${matchTypeConfig.label} ${useMatchNumber} abort triggered ${isManual ? '(Manual)' : '(System)'}.`);
         gameState = 'WAITING';
         matchEndedBy = isManual ? 'manual' : 'system';
         
         if (matchStopTimeout) clearTimeout(matchStopTimeout);
         matchStopTimeout = null;
-        stopAllRecordings();
+        const recordedFiles = stopAllRecordings();
         
-        // Only increment if this was actually recording
+        // Only save state if this was actually recording
         if (matchStartTime) {
-            currentMatchNumber++;
+            const duration = (Date.now() - matchStartTime) / 1000;
+            console.log(`[EVENT] Match recording stopped after ${duration.toFixed(1)}s. Files: ${recordedFiles ? recordedFiles.join(', ') : 'None'}`);
+            currentMatchNumber = useMatchNumber;
+            currentMatchType = useMatchType;
             saveMatchState();
             matchStartTime = null;
         }
     }
+}
+
+// Generate preview of files that would be recorded
+function generateFilePreview(matchNumber, matchType) {
+    const matchTypeConfig = MATCH_TYPES[matchType] || MATCH_TYPES.practice;
+    const files = [];
+    
+    for (const cameraKey in cameraConfig) {
+        const camera = cameraConfig[cameraKey];
+        files.push({
+            cameraKey,
+            cameraName: camera.name,
+            fileName: `${matchTypeConfig.prefix}${matchNumber}_${cameraKey}_[timestamp].mp4`,
+            estimatedSize: '~500MB' // Rough estimate for 2:35 recording
+        });
+    }
+    
+    return {
+        files,
+        totalFiles: files.length,
+        estimatedDuration: '2:35',
+        matchLabel: `${matchTypeConfig.label} ${matchNumber}`
+    };
 }
 
 // --- HTTP Server with Enhanced API ---

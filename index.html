@@ -97,6 +97,75 @@
             color: white;
             z-index: 15;
         }
+        .file-preview-list {
+            max-height: 120px;
+            overflow-y: auto;
+            border: 1px solid #374151;
+            border-radius: 6px;
+            background: rgba(17, 24, 39, 0.5);
+        }
+        .file-preview-item {
+            padding: 6px 10px;
+            border-bottom: 1px solid #374151;
+            font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+            font-size: 11px;
+            color: #d1d5db;
+            transition: background-color 0.2s;
+        }
+        .file-preview-item:last-child {
+            border-bottom: none;
+        }
+        .file-preview-item:hover {
+            background-color: rgba(55, 65, 81, 0.3);
+        }
+        .match-type-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+        .match-type-btn {
+            padding: 8px 12px;
+            border-radius: 6px;
+            border: 2px solid;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-align: center;
+        }
+        .match-type-btn.active {
+            transform: scale(1.02);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        }
+        .match-number-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .match-number-input {
+            width: 80px;
+            padding: 6px 8px;
+            border-radius: 4px;
+            border: 1px solid #374151;
+            background: #1f2937;
+            color: white;
+            text-align: center;
+            font-weight: bold;
+        }
+        .match-number-btn {
+            width: 28px;
+            height: 28px;
+            border-radius: 4px;
+            border: 1px solid #374151;
+            background: #374151;
+            color: white;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .match-number-btn:hover {
+            background: #4b5563;
+        }
     </style>
 </head>
 <body class="bg-gray-800 text-white flex flex-col min-h-screen p-4">
@@ -128,22 +197,71 @@
             <div class="mb-4 p-4 bg-gray-900 rounded-lg shadow-lg text-center">
                 <p id="gameStateDisplay" class="text-2xl font-bold text-yellow-400 tracking-wider">WAITING FOR MATCH</p>
                 <p id="matchTimerDisplay" class="text-lg text-gray-300 mt-1 h-6"></p>
-                <p id="nextMatchFile" class="text-sm text-blue-400 mt-2">Next Recording: <span id="nextFileName">match1_camera1.mp4</span></p>
             </div>
 
             <div class="bg-gray-900/50 p-4 rounded-2xl shadow-lg border border-gray-700 space-y-4">
-                <h2 class="text-2xl font-bold text-center">Match Controls</h2>
-                 <div class="flex items-center justify-center gap-2">
+                <h2 class="text-2xl font-bold text-center">Match Configuration</h2>
+                
+                <!-- Match Type Selection -->
+                <div class="space-y-2">
+                    <label class="block text-sm font-medium text-gray-300">Match Type:</label>
+                    <div class="match-type-grid">
+                        <button class="match-type-btn active" data-type="practice" 
+                                style="background-color: #059669; border-color: #059669; color: white;">
+                            Practice
+                        </button>
+                        <button class="match-type-btn" data-type="quals" 
+                                style="background-color: transparent; border-color: #3b82f6; color: #3b82f6;">
+                            Qualifications
+                        </button>
+                        <button class="match-type-btn" data-type="semifinals" 
+                                style="background-color: transparent; border-color: #f59e0b; color: #f59e0b;">
+                            Semi-Finals
+                        </button>
+                        <button class="match-type-btn" data-type="finals" 
+                                style="background-color: transparent; border-color: #dc2626; color: #dc2626;">
+                            Finals
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Match Number Selection -->
+                <div class="space-y-2">
+                    <label class="block text-sm font-medium text-gray-300">Match Number:</label>
+                    <div class="match-number-container">
+                        <button class="match-number-btn" id="matchNumberDown">-</button>
+                        <input type="number" id="matchNumberInput" class="match-number-input" min="1" max="999" value="1">
+                        <button class="match-number-btn" id="matchNumberUp">+</button>
+                        <span class="text-xs text-gray-400 ml-2">Current: <span id="currentMatchDisplay">1</span></span>
+                    </div>
+                </div>
+
+                <!-- File Preview -->
+                <div class="space-y-2">
+                    <label class="block text-sm font-medium text-gray-300">Files to be recorded:</label>
+                    <div id="filePreviewList" class="file-preview-list">
+                        <div class="file-preview-item">No cameras configured</div>
+                    </div>
+                    <div class="text-xs text-gray-400 text-center">
+                        <span id="totalCamerasCount">0</span> camera(s) × <span id="estimatedDuration">2:35</span> = 
+                        <span id="totalFilesCount">0</span> recording(s)
+                    </div>
+                </div>
+
+                <!-- Recording Status -->
+                <div class="flex items-center justify-center gap-2">
                     <div id="recordingStatus" class="hidden items-center gap-2">
                         <span class="recording-indicator w-3 h-3"></span>
                         <span class="text-red-400 font-semibold">RECORDING</span>
                     </div>
                 </div>
+
+                <!-- Control Buttons -->
                 <div class="grid grid-cols-2 gap-3">
                     <button id="startMatchBtn" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-md transition duration-300">Start Match</button>
                     <button id="endMatchBtn" class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-md transition duration-300">End Match</button>
                 </div>
-                 <button id="resetMatchBtn" class="w-full bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-2 px-5 rounded-md transition duration-300">Reset System</button>
+                <button id="resetMatchBtn" class="w-full bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-2 px-5 rounded-md transition duration-300">Reset System</button>
             </div>
 
             <div class="bg-gray-900/50 p-4 rounded-2xl shadow-lg border border-gray-700 space-y-4 mt-6">
@@ -193,7 +311,6 @@
         const videoGrid = document.getElementById('videoGrid');
         const gameStateDisplay = document.getElementById('gameStateDisplay');
         const matchTimerDisplay = document.getElementById('matchTimerDisplay');
-        const nextFileName = document.getElementById('nextFileName');
         const eventLog = document.getElementById('eventLog');
         const listeningIndicator = document.getElementById('listeningIndicator');
         const recordingStatus = document.getElementById('recordingStatus');
@@ -218,6 +335,16 @@
         const saveThresholdButton = document.getElementById('saveThresholdButton');
         const detectionConfidence = document.getElementById('detectionConfidence');
 
+        // New match configuration elements
+        const matchNumberInput = document.getElementById('matchNumberInput');
+        const matchNumberUp = document.getElementById('matchNumberUp');
+        const matchNumberDown = document.getElementById('matchNumberDown');
+        const currentMatchDisplay = document.getElementById('currentMatchDisplay');
+        const filePreviewList = document.getElementById('filePreviewList');
+        const totalCamerasCount = document.getElementById('totalCamerasCount');
+        const totalFilesCount = document.getElementById('totalFilesCount');
+        const estimatedDuration = document.getElementById('estimatedDuration');
+
         let players = new Map();
         let audioSources = new Map();
         let referenceFingerprints = {};
@@ -226,6 +353,7 @@
         let loudnessHistory = [];
         let lastMatchTime = 0;
         let currentMatchNumber = 1;
+        let selectedMatchType = 'practice';
         let isAudioListening = false;
         let isPlayingTestAudio = false;
         let showFingerprintOverlay = false;
@@ -240,24 +368,38 @@
         const MATCH_STATES = { WAITING: 'WAITING FOR MATCH', RECORDING: 'RECORDING MATCH' };
         let currentMatchState = MATCH_STATES.WAITING;
 
+        // Match type configurations
+        const MATCH_TYPES = {
+            practice: { color: '#059669', label: 'Practice', prefix: 'P' },
+            quals: { color: '#3b82f6', label: 'Qualifications', prefix: 'Q' },
+            semifinals: { color: '#f59e0b', label: 'Semi-Finals', prefix: 'SF' },
+            finals: { color: '#dc2626', label: 'Finals', prefix: 'F' }
+        };
+
         async function initializeApp() {
             canvas.width = canvas.clientWidth;
             canvas.height = canvas.clientHeight;
             fingerprintCanvas.width = fingerprintCanvas.clientWidth;
             fingerprintCanvas.height = fingerprintCanvas.clientHeight;
             updateGameStateDisplay();
-            updateNextFileName();
             
             try {
-                const [cameras, fingerprints, thresholdData] = await Promise.all([
+                const [cameras, fingerprints, thresholdData, matchState] = await Promise.all([
                     fetch('/api/cameras').then(res => res.json()),
                     fetch('/api/fingerprints').then(res => res.json()),
-                    fetch('/api/threshold').then(res => res.json())
+                    fetch('/api/threshold').then(res => res.json()),
+                    fetch('/api/match-state').then(res => res.json())
                 ]);
+                
                 referenceFingerprints = fingerprints;
                 matchThresholdSlider.value = thresholdData.matchThreshold || 80;
                 matchThresholdValue.textContent = matchThresholdSlider.value;
                 updateThresholdLine();
+                
+                // Load match state
+                currentMatchNumber = matchState.currentMatchNumber || 1;
+                matchNumberInput.value = currentMatchNumber;
+                currentMatchDisplay.textContent = currentMatchNumber;
                 
                 // Initialize fingerprint filters
                 initializeFingerprintFilters();
@@ -266,6 +408,9 @@
                 for (const key in cameras) {
                     addCameraStream(key, cameras[key]);
                 }
+                
+                // Update file preview after cameras are loaded
+                updateFilePreview();
                 
                 // Immediate audio setup after camera initialization
                 setTimeout(() => {
@@ -364,6 +509,84 @@
             }
         }
 
+        function updateFilePreview() {
+            const cameraKeys = Array.from(players.keys());
+            const matchTypeConfig = MATCH_TYPES[selectedMatchType];
+            const matchNum = parseInt(matchNumberInput.value) || 1;
+            
+            if (cameraKeys.length === 0) {
+                filePreviewList.innerHTML = '<div class="file-preview-item">No cameras configured</div>';
+                totalCamerasCount.textContent = '0';
+                totalFilesCount.textContent = '0';
+                return;
+            }
+
+            let previewHTML = '';
+            cameraKeys.forEach((cameraKey, index) => {
+                const camera = players.get(cameraKey);
+                const cameraName = camera?.container?.querySelector('.font-bold')?.textContent || cameraKey;
+                const fileName = `${matchTypeConfig.prefix}${matchNum}_${cameraKey}_[timestamp].mp4`;
+                
+                previewHTML += `
+                    <div class="file-preview-item">
+                        <div class="flex justify-between items-center">
+                            <span>${fileName}</span>
+                            <span class="text-xs text-gray-500">${cameraName}</span>
+                        </div>
+                    </div>
+                `;
+            });
+
+            filePreviewList.innerHTML = previewHTML;
+            totalCamerasCount.textContent = cameraKeys.length;
+            totalFilesCount.textContent = cameraKeys.length;
+        }
+
+        // Match type selection handlers
+        document.querySelectorAll('.match-type-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                // Remove active from all buttons
+                document.querySelectorAll('.match-type-btn').forEach(b => {
+                    b.classList.remove('active');
+                    const type = b.dataset.type;
+                    const config = MATCH_TYPES[type];
+                    b.style.backgroundColor = 'transparent';
+                    b.style.color = config.color;
+                });
+                
+                // Set active button
+                btn.classList.add('active');
+                const type = btn.dataset.type;
+                const config = MATCH_TYPES[type];
+                btn.style.backgroundColor = config.color;
+                btn.style.color = 'white';
+                
+                selectedMatchType = type;
+                updateFilePreview();
+                
+                logEvent('Match Type Changed', `Selected: ${config.label}`);
+            });
+        });
+
+        // Match number controls
+        matchNumberUp.addEventListener('click', () => {
+            const current = parseInt(matchNumberInput.value) || 1;
+            matchNumberInput.value = Math.min(999, current + 1);
+            updateFilePreview();
+        });
+
+        matchNumberDown.addEventListener('click', () => {
+            const current = parseInt(matchNumberInput.value) || 1;
+            matchNumberInput.value = Math.max(1, current - 1);
+            updateFilePreview();
+        });
+
+        matchNumberInput.addEventListener('input', () => {
+            const value = parseInt(matchNumberInput.value) || 1;
+            matchNumberInput.value = Math.max(1, Math.min(999, value));
+            updateFilePreview();
+        });
+
         function addCameraStream(cameraKey, cameraConfig) {
             if (players.has(cameraKey)) return;
 
@@ -426,6 +649,9 @@
             if (!activeAudioSourceKey) {
                 setAudioSource(cameraKey);
             }
+
+            // Update file preview when cameras change
+            updateFilePreview();
         }
 
         function reconnectCamera(cameraKey) {
@@ -534,6 +760,9 @@
                     setAudioSource(players.keys().next().value);
                 }
             }
+
+            // Update file preview when cameras change
+            updateFilePreview();
         }
 
         function setAudioSource(cameraKey) {
@@ -722,23 +951,38 @@
                 matchEndedBy = 'timer';
             }
             
+            // Get current match configuration
+            const matchNum = parseInt(matchNumberInput.value) || 1;
+            const matchTypeConfig = MATCH_TYPES[selectedMatchType];
+            
             fetch('/api/match-event', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ eventType, matchNumber: currentMatchNumber, isManual })
+                body: JSON.stringify({ 
+                    eventType, 
+                    matchNumber: matchNum, 
+                    matchType: selectedMatchType,
+                    isManual 
+                })
             }).then(res => res.json()).then(data => {
                 if (data.success) {
                     if (eventType === 'MATCH_START') {
                         currentMatchState = MATCH_STATES.RECORDING;
+                        currentMatchNumber = matchNum;
+                        currentMatchDisplay.textContent = currentMatchNumber;
                         startMatchTimer();
                         // Don't stop listening - just update UI
-                        logEvent(`Match ${currentMatchNumber} Started`, isManual ? 'Manual' : 'FRC Start Horn');
+                        logEvent(`${matchTypeConfig.label} ${matchNum} Started`, isManual ? 'Manual' : 'FRC Start Horn');
                     } else {
                         currentMatchState = MATCH_STATES.WAITING;
                         stopMatchTimer();
-                        logEvent(`Match ${currentMatchNumber} Ended`, `${matchEndedBy === 'manual' ? 'Manual intervention' : 'Timer expired'}`);
-                        currentMatchNumber++;
-                        updateNextFileName();
+                        logEvent(`${matchTypeConfig.label} ${matchNum} Ended`, `${matchEndedBy === 'manual' ? 'Manual intervention' : 'Timer expired'}`);
+                        
+                        // Auto-increment match number for next match
+                        const nextMatchNum = matchNum + 1;
+                        matchNumberInput.value = nextMatchNum;
+                        currentMatchDisplay.textContent = nextMatchNum;
+                        updateFilePreview();
                         
                         // Immediately restart analysis after match ends
                         setTimeout(() => {
@@ -800,11 +1044,6 @@
 
         document.addEventListener('click', activateAudioOnInteraction, { once: false });
         document.addEventListener('keydown', activateAudioOnInteraction, { once: false });
-        
-        function updateNextFileName() {
-            const firstCameraKey = players.size > 0 ? players.keys().next().value : 'camera1';
-            nextFileName.textContent = `match${currentMatchNumber}_${firstCameraKey}.mp4`;
-        }
 
         startMatchBtn.addEventListener('click', () => sendMatchEvent('MATCH_START'));
         endMatchBtn.addEventListener('click', () => {
