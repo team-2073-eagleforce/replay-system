@@ -4,3 +4,5 @@ add recordings to a subdirectories of their own
 disable reconnecting client and server side during recordings. can only reconnect if recording is turned off to disable stupid people
 
 add a feature such that if they don't play the start sound, at least hear the teleop bell, then add buffer and then listen for the auto end
+when leaving the page temporarily, it cuts the connection but then trying to go back the cameras refuse to connect core.
+add a noise reducer so that the main sound can be amplified and focused on.
