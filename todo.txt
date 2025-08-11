@@ -4,3 +4,4 @@ add recordings to a subdirectories of their own
 disable reconnecting client and server side during recordings. can only reconnect if recording is turned off to disable stupid people
 
 add a feature such that if they don't play the start sound, at least hear the teleop bell, then add buffer and then listen for the auto end
+add scouting app API calls and connect with scouting app so that A scout can control when matches start and stop if needed

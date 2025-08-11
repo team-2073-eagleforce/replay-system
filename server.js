@@ -5,11 +5,411 @@ const path = require('path');
 const url = 'url';
 const { spawn } = require('child_process');
 
-// --- Finalized StreamManager Combining Best of Both Versions ---
+// --- Simple Audio Detector Class (Integrated) ---
+class SimpleAudioDetector {
+    constructor(fingerprintsDb, onMatchCallback) {
+        // Your specific audio parameters
+        this.sampleRate = 22050;
+        this.frameSize = 1024;
+        this.hopLength = 512;
+        
+        // From your analysis - exact frequency range where energy is concentrated
+        this.targetFreqMin = 285;   // Your actual minimum
+        this.targetFreqMax = 3207;  // Your actual maximum
+        this.primaryBandMin = 2000; // High-mid band where most energy is
+        this.primaryBandMax = 4000;
+        
+        // Your specific levels
+        this.noiseFloor = -14.4;           // Your calculated noise floor
+        this.confidenceThreshold = 0.70;   // Your confidence threshold
+        this.rmsReference = -20.4;         // Your audio's RMS level
+        
+        // Detection stability - 5 second cooldown as requested
+        this.cooldownPeriod = 5000; // 5 seconds
+        this.lastDetectionTime = 0;
+        this.consecutiveMatches = 2; // Require 2 consecutive matches
+        this.matchHistory = [];
+        
+        // Processing state
+        this.audioBuffer = [];
+        this.fingerprintsDb = fingerprintsDb;
+        this.onMatchCallback = onMatchCallback;
+        this.isProcessing = false;
+        this.audioProcess = null;
+        
+        // Wiener filter coefficients (simple noise reduction)
+        this.noiseProfile = null;
+        this.adaptationRate = 0.1;
+        
+        // AGC parameters
+        this.agcEnabled = true;
+        this.targetRMS = -20.0; // Target RMS level (close to your reference)
+        this.agcGain = 1.0;
+        this.agcAttack = 0.1;
+        this.agcRelease = 0.01;
+        
+        console.log(`[DETECTOR] Initialized for frequency range: ${this.targetFreqMin}-${this.targetFreqMax}Hz`);
+        console.log(`[DETECTOR] Primary detection band: ${this.primaryBandMin}-${this.primaryBandMax}Hz`);
+        console.log(`[DETECTOR] Noise floor: ${this.noiseFloor}dB, Cooldown: ${this.cooldownPeriod}ms`);
+    }
+
+    startListening() {
+        if (this.isProcessing) {
+            console.log('[DETECTOR] Already listening');
+            return;
+        }
+
+        this.isProcessing = true;
+        this.lastDetectionTime = 0; // Reset cooldown
+        
+        console.log('[DETECTOR] Starting optimized audio capture...');
+        
+        // Start FFmpeg with specific preprocessing for your frequency range
+        const ffmpegArgs = [
+            '-f', 'alsa',                    // Audio input (change for your OS)
+            '-i', 'default',                 // Default microphone
+            '-ar', this.sampleRate.toString(),
+            '-ac', '1',                      // Mono
+            '-f', 'wav',
+            '-acodec', 'pcm_s16le',
+            
+            // Optimized filters for your specific frequency range
+            '-af', [
+                `highpass=f=${this.targetFreqMin}`,        // Remove frequencies below 285Hz
+                `lowpass=f=${this.targetFreqMax}`,         // Remove frequencies above 3207Hz
+                `bandpass=f=${(this.primaryBandMin + this.primaryBandMax) / 2}:width_type=h:w=${this.primaryBandMax - this.primaryBandMin}`, // Emphasize 2-4kHz band
+                'afftdn=nf=0.3',                           // Spectral noise reduction
+                'compand=attacks=0.1:decays=0.2:points=-30/-30|-20/-15|-10/-5|0/0', // Dynamic range compression
+                'volume=1.5'                               // Slight boost
+            ].join(','),
+            
+            'pipe:1'
+        ];
+
+        this.audioProcess = spawn('ffmpeg', ffmpegArgs, { 
+            stdio: ['ignore', 'pipe', 'pipe'] 
+        });
+
+        this.audioProcess.stdout.on('data', (chunk) => {
+            this.processAudioData(chunk);
+        });
+
+        this.audioProcess.stderr.on('data', (data) => {
+            const output = data.toString();
+            // Only log errors, not status updates
+            if (output.includes('Error') || output.includes('error')) {
+                console.log(`[DETECTOR-FFMPEG] ${output.substring(0, 200)}`);
+            }
+        });
+
+        this.audioProcess.on('close', (code) => {
+            console.log(`[DETECTOR] Audio capture stopped (code: ${code})`);
+            this.isProcessing = false;
+        });
+
+        this.audioProcess.on('error', (err) => {
+            console.error('[DETECTOR] Failed to start audio capture:', err.message);
+            this.isProcessing = false;
+        });
+    }
+
+    stopListening() {
+        if (this.audioProcess) {
+            this.audioProcess.kill('SIGTERM');
+            this.audioProcess = null;
+        }
+        this.isProcessing = false;
+        this.audioBuffer = [];
+        this.matchHistory = [];
+        console.log('[DETECTOR] Stopped listening');
+    }
+
+    processAudioData(chunk) {
+        // Convert buffer to 16-bit integers
+        const samples = Array.from(new Int16Array(chunk.buffer));
+        this.audioBuffer.push(...samples);
+        
+        // Process when we have enough samples
+        if (this.audioBuffer.length >= this.frameSize * 2) {
+            this.processFrame();
+        }
+    }
+
+    processFrame() {
+        if (this.audioBuffer.length < this.frameSize * 2) return;
+
+        // Extract frame
+        const samples = this.audioBuffer.splice(0, this.frameSize);
+        
+        // Convert to float and normalize
+        let floatSamples = samples.map(s => s / 32768.0);
+        
+        // Apply Automatic Gain Control
+        if (this.agcEnabled) {
+            floatSamples = this.applyAGC(floatSamples);
+        }
+        
+        // Apply Wiener filtering for noise reduction
+        floatSamples = this.applyWienerFilter(floatSamples);
+        
+        // Calculate signal energy
+        const energy = this.calculateRMSdB(floatSamples);
+        
+        // Skip if below noise floor
+        if (energy < this.noiseFloor) {
+            return;
+        }
+        
+        // Check cooldown period
+        const now = Date.now();
+        if (now - this.lastDetectionTime < this.cooldownPeriod) {
+            return; // Still in cooldown
+        }
+
+        // Extract MFCC features optimized for your frequency range
+        const mfcc = this.extractOptimizedMFCC(floatSamples);
+        
+        // Compare against fingerprints
+        let bestMatch = null;
+        let bestConfidence = 0;
+
+        for (const [name, fingerprint] of Object.entries(this.fingerprintsDb)) {
+            if (!fingerprint.mfcc) continue;
+            
+            const confidence = this.calculateWeightedSimilarity(mfcc, fingerprint.mfcc);
+            if (confidence > bestConfidence) {
+                bestMatch = name;
+                bestConfidence = confidence;
+            }
+        }
+
+        // Track matches for stability
+        this.matchHistory.push({
+            match: bestMatch,
+            confidence: bestConfidence,
+            energy: energy,
+            timestamp: now
+        });
+
+        // Keep only recent history
+        if (this.matchHistory.length > 5) {
+            this.matchHistory.shift();
+        }
+
+        // Check for stable detection
+        if (bestConfidence > this.confidenceThreshold) {
+            const recentMatches = this.matchHistory.slice(-this.consecutiveMatches);
+            
+            // Verify consecutive matches
+            const stableMatch = recentMatches.length === this.consecutiveMatches && 
+                               recentMatches.every(m => 
+                                   m.match === bestMatch && 
+                                   m.confidence > this.confidenceThreshold
+                               );
+
+            if (stableMatch) {
+                console.log(`[DETECTOR] MATCH DETECTED: ${bestMatch}`);
+                console.log(`[DETECTOR] Confidence: ${(bestConfidence * 100).toFixed(1)}%, Energy: ${energy.toFixed(1)}dB`);
+                
+                // Trigger callback
+                if (this.onMatchCallback) {
+                    this.onMatchCallback(bestMatch, bestConfidence, {
+                        energy: energy,
+                        detectionTime: now
+                    });
+                }
+                
+                // Set cooldown
+                this.lastDetectionTime = now;
+                this.matchHistory = []; // Clear history
+                
+                console.log(`[DETECTOR] Cooldown active for ${this.cooldownPeriod}ms`);
+            }
+        }
+    }
+
+    applyAGC(samples) {
+        // Calculate current RMS
+        const currentRMS = Math.sqrt(samples.reduce((sum, s) => sum + s * s, 0) / samples.length);
+        const currentRMSdB = 20 * Math.log10(currentRMS + 1e-10);
+        
+        // Calculate desired gain
+        const gainChange = this.targetRMS - currentRMSdB;
+        const targetGain = Math.pow(10, gainChange / 20);
+        
+        // Smooth gain changes
+        if (targetGain > this.agcGain) {
+            this.agcGain += (targetGain - this.agcGain) * this.agcAttack;
+        } else {
+            this.agcGain += (targetGain - this.agcGain) * this.agcRelease;
+        }
+        
+        // Limit gain to reasonable range
+        this.agcGain = Math.max(0.1, Math.min(10.0, this.agcGain));
+        
+        // Apply gain
+        return samples.map(s => s * this.agcGain);
+    }
+
+    applyWienerFilter(samples) {
+        // Simple Wiener-like filtering - adapt to noise
+        if (!this.noiseProfile) {
+            // Initialize noise profile with first few frames
+            this.noiseProfile = new Array(samples.length).fill(0);
+        }
+        
+        // Update noise profile (simple approach)
+        const energy = this.calculateRMSdB(samples);
+        if (energy < this.noiseFloor + 3) { // Likely noise
+            for (let i = 0; i < samples.length; i++) {
+                this.noiseProfile[i] += this.adaptationRate * (samples[i] - this.noiseProfile[i]);
+            }
+        }
+        
+        // Apply noise reduction
+        return samples.map((s, i) => s - 0.3 * this.noiseProfile[i]);
+    }
+
+    calculateRMSdB(samples) {
+        const rms = Math.sqrt(samples.reduce((sum, s) => sum + s * s, 0) / samples.length);
+        return 20 * Math.log10(rms + 1e-10);
+    }
+
+    extractOptimizedMFCC(samples) {
+        // Apply pre-emphasis (slight, since you have good high-frequency content)
+        const emphasized = this.preEmphasis(samples, 0.8);
+        
+        // Hamming window
+        const windowed = this.applyHammingWindow(emphasized);
+        
+        // FFT and focus on your frequency bands
+        const spectrum = this.computeSpectrum(windowed);
+        
+        // Weight spectrum to emphasize your primary band (2-4kHz)
+        const weightedSpectrum = this.applyFrequencyWeighting(spectrum);
+        
+        // Convert to MFCC
+        return this.spectrumToMFCC(weightedSpectrum);
+    }
+
+    applyFrequencyWeighting(spectrum) {
+        const weighted = new Array(spectrum.length);
+        const freqStep = this.sampleRate / (2 * spectrum.length);
+        
+        for (let i = 0; i < spectrum.length; i++) {
+            const freq = i * freqStep;
+            let weight = 1.0;
+            
+            // Boost your primary band (2-4kHz where most energy is)
+            if (freq >= this.primaryBandMin && freq <= this.primaryBandMax) {
+                weight = 1.5; // 50% boost for primary detection band
+            }
+            // Slight boost for your full range
+            else if (freq >= this.targetFreqMin && freq <= this.targetFreqMax) {
+                weight = 1.2; // 20% boost for full detection range
+            }
+            // Reduce weight for frequencies outside your range
+            else {
+                weight = 0.8;
+            }
+            
+            weighted[i] = spectrum[i] * weight;
+        }
+        
+        return weighted;
+    }
+
+    preEmphasis(samples, alpha) {
+        const result = [samples[0]];
+        for (let i = 1; i < samples.length; i++) {
+            result.push(samples[i] - alpha * samples[i - 1]);
+        }
+        return result;
+    }
+
+    applyHammingWindow(samples) {
+        const n = samples.length;
+        return samples.map((s, i) => s * (0.54 - 0.46 * Math.cos(2 * Math.PI * i / (n - 1))));
+    }
+
+    computeSpectrum(samples) {
+        // Simplified FFT - use a proper library in production
+        const spectrum = new Array(samples.length / 2);
+        for (let k = 0; k < spectrum.length; k++) {
+            let real = 0, imag = 0;
+            for (let n = 0; n < samples.length; n++) {
+                const angle = -2 * Math.PI * k * n / samples.length;
+                real += samples[n] * Math.cos(angle);
+                imag += samples[n] * Math.sin(angle);
+            }
+            spectrum[k] = Math.sqrt(real * real + imag * imag);
+        }
+        return spectrum;
+    }
+
+    spectrumToMFCC(spectrum) {
+        const numCoeffs = 13;
+        const mfcc = [];
+        
+        for (let i = 0; i < numCoeffs; i++) {
+            let coeff = 0;
+            for (let j = 0; j < spectrum.length; j++) {
+                coeff += Math.log(spectrum[j] + 1e-10) * Math.cos(Math.PI * i * (j + 0.5) / spectrum.length);
+            }
+            mfcc.push(coeff / spectrum.length);
+        }
+        
+        return mfcc;
+    }
+
+    calculateWeightedSimilarity(mfcc1, mfcc2) {
+        if (!mfcc1 || !mfcc2 || mfcc1.length !== mfcc2.length) return 0;
+        
+        // Weight lower coefficients more heavily (they contain most important info)
+        // Based on your analysis showing concentrated frequency content
+        const weights = mfcc1.map((_, i) => {
+            if (i < 3) return 1.5;      // High weight for first 3 coefficients
+            if (i < 6) return 1.2;      // Medium-high weight for next 3
+            return 1.0;                 // Normal weight for rest
+        });
+        
+        let distance = 0;
+        let weightSum = 0;
+        
+        for (let i = 0; i < mfcc1.length; i++) {
+            const diff = mfcc1[i] - mfcc2[i];
+            distance += weights[i] * diff * diff;
+            weightSum += weights[i];
+        }
+        
+        distance = Math.sqrt(distance / weightSum);
+        
+        // Convert to similarity score, adjusted for your confidence threshold
+        return Math.exp(-distance * 1.8); // Slightly more sensitive than default
+    }
+
+    // Status and debugging methods
+    getStatus() {
+        return {
+            isProcessing: this.isProcessing,
+            cooldownRemaining: Math.max(0, this.cooldownPeriod - (Date.now() - this.lastDetectionTime)),
+            recentMatches: this.matchHistory.length,
+            currentGain: this.agcGain?.toFixed(2),
+            parameters: {
+                frequencyRange: `${this.targetFreqMin}-${this.targetFreqMax}Hz`,
+                primaryBand: `${this.primaryBandMin}-${this.primaryBandMax}Hz`,
+                noiseFloor: `${this.noiseFloor}dB`,
+                confidenceThreshold: this.confidenceThreshold,
+                cooldownPeriod: `${this.cooldownPeriod}ms`
+            }
+        };
+    }
+}
+
+// --- Finalized StreamManager (Your existing code unchanged) ---
 class StreamManager {
     constructor() {
         this.streams = new Map();
-        // Inspired by your old code: using a 30-second idle timeout.
         this.idleTimeout = 30000;
     }
 
@@ -23,30 +423,24 @@ class StreamManager {
 
         console.log(`[STREAM] Camera details for ${cameraKey}:`, cameraDetails);
 
-        // If stream doesn't exist or is in ERROR state, create a fresh one
         if (!this.streams.has(cameraKey) || this.streams.get(cameraKey).state === 'ERROR') {
             this.streams.set(cameraKey, this._createCameraStream(cameraKey, cameraDetails));
         }
         const stream = this.streams.get(cameraKey);
 
-        // If a previous upstreamRequest exists (from a failed connection), clean up before adding client
         if (stream.state === 'ERROR' || stream.upstreamRequest === null) {
-            // Recreate stream
             this.streams.set(cameraKey, this._createCameraStream(cameraKey, cameraDetails));
         }
         const currentStream = this.streams.get(cameraKey);
 
-        // Add client
         currentStream.clients.add(res);
         console.log(`[STREAM] Client connected to ${cameraKey}. Total clients: ${currentStream.clients.size}`);
 
-        // Cancel any pending cleanup
         if (currentStream.cleanupTimeout) {
             clearTimeout(currentStream.cleanupTimeout);
             currentStream.cleanupTimeout = null;
         }
 
-        // Remove client on close
         req.on('close', () => {
             currentStream.clients.delete(res);
             console.log(`[STREAM] Client disconnected from ${cameraKey}. Remaining clients: ${currentStream.clients.size}`);
@@ -55,12 +449,10 @@ class StreamManager {
             }
         });
 
-        // Set headers for the stream
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Cache-Control', 'no-cache');
         res.setHeader('Connection', 'keep-alive');
 
-        // If stream is CONNECTED, send headers immediately
         if (currentStream.state === 'CONNECTED' && currentStream.headers) {
             res.writeHead(200, currentStream.headers);
         } else if (currentStream.state === 'ERROR') {
@@ -68,7 +460,6 @@ class StreamManager {
             return;
         }
 
-        // If stream is not connected, always start a new connection
         if (currentStream.state === 'IDLE' || currentStream.state === 'ERROR') {
             this._connectToCamera(currentStream);
         }
@@ -78,7 +469,7 @@ class StreamManager {
         return {
             key: cameraKey,
             details: cameraDetails,
-            state: 'IDLE', // IDLE, CONNECTING, CONNECTED, ERROR
+            state: 'IDLE',
             clients: new Set(),
             upstreamRequest: null,
             headers: null,
@@ -115,7 +506,6 @@ class StreamManager {
                 'Transfer-Encoding': 'chunked'
             };
 
-            // Send headers to all waiting clients
             for (const clientRes of stream.clients) {
                 if (!clientRes.headersSent) {
                     try {
@@ -127,12 +517,10 @@ class StreamManager {
             }
 
             response.on('data', (chunk) => {
-                // Broadcast data chunk to every connected client
                 const clientsToRemove = [];
                 for (const clientRes of stream.clients) {
                     if (clientRes.writable) {
                         clientRes.write(chunk, (err) => {
-                            // If writing fails, the client has disconnected abruptly.
                             if (err) {
                                 console.log(`[STREAM] Write error for client on ${stream.key}, scheduling removal.`);
                                 clientsToRemove.push(clientRes);
@@ -142,7 +530,6 @@ class StreamManager {
                         clientsToRemove.push(clientRes);
                     }
                 }
-                // Clean up any clients that failed to write
                 if (clientsToRemove.length > 0) {
                      clientsToRemove.forEach(client => stream.clients.delete(client));
                      if(stream.clients.size === 0) this._scheduleCleanup(stream);
@@ -188,7 +575,6 @@ class StreamManager {
 
         stream.clients.forEach(res => this._safeRespond(res, 503, 'Stream disconnected by server.'));
         
-        // Reset the stream state
         this.streams.set(stream.key, this._createCameraStream(stream.key, stream.details));
     }
 
@@ -220,7 +606,7 @@ class StreamManager {
     }
 }
 
-// --- Configuration ---
+// --- Configuration (Your existing code) ---
 const CONFIG_PATH = './config.json';
 const FINGERPRINTS_DB_PATH = './fingerprints.json';
 const THRESHOLD_PATH = './threshold.json';
@@ -232,14 +618,18 @@ const MATCH_DURATION_MS = 155000;
 let cameraConfig, fingerprintsDb = {};
 let recordingProcesses = new Map();
 let matchStopTimeout = null;
-let gameState = 'WAITING'; // 'WAITING', 'RECORDING'
+let gameState = 'WAITING';
 let currentMatchNumber = 1;
-let currentMatchType = 'practice'; // 'practice', 'quals', 'semifinals', 'finals'
+let currentMatchType = 'practice';
 let matchStartTime = null;
-let matchEndedBy = 'timer'; // 'timer' or 'manual'
+let matchEndedBy = 'timer';
 const streamManager = new StreamManager();
 
-// Match type configurations
+// --- NEW: Audio Detection Variables ---
+let audioDetector = null;
+let audioDetectionActive = false;
+
+// Match type configurations (Your existing code)
 const MATCH_TYPES = {
     practice: { label: 'Practice', prefix: 'P' },
     quals: { label: 'Qualifications', prefix: 'Q' },
@@ -249,7 +639,7 @@ const MATCH_TYPES = {
 
 if (!fs.existsSync(RECORDINGS_DIR)) fs.mkdirSync(RECORDINGS_DIR);
 
-// Load match state on startup
+// Load match state on startup (Your existing code)
 try {
     if (fs.existsSync(MATCH_STATE_PATH)) {
         const matchState = JSON.parse(fs.readFileSync(MATCH_STATE_PATH));
@@ -263,7 +653,7 @@ try {
     currentMatchType = 'practice';
 }
 
-// Save match state
+// Save match state (Your existing function)
 function saveMatchState() {
     try {
         fs.writeFileSync(MATCH_STATE_PATH, JSON.stringify({
@@ -276,6 +666,7 @@ function saveMatchState() {
     }
 }
 
+// Load camera config (Your existing code)
 try {
     cameraConfig = JSON.parse(fs.readFileSync(CONFIG_PATH)).cameras;
     console.log('Camera configuration loaded:', Object.keys(cameraConfig));
@@ -284,16 +675,48 @@ try {
     process.exit(1);
 }
 
+// Load fingerprints and initialize audio detector (MODIFIED)
 try {
     if (fs.existsSync(FINGERPRINTS_DB_PATH)) {
         fingerprintsDb = JSON.parse(fs.readFileSync(FINGERPRINTS_DB_PATH));
         console.log(`Audio fingerprints database loaded: ${Object.keys(fingerprintsDb).length} fingerprints`);
+        
+        // --- NEW: Initialize Audio Detector ---
+        initAudioDetector();
     }
 } catch (error) {
     console.error('Could not read or parse fingerprints.json.', error);
 }
 
-// --- Enhanced Recording & Event Functions ---
+// --- NEW: Audio Detector Functions ---
+function initAudioDetector() {
+    if (audioDetector) {
+        audioDetector.stopListening();
+    }
+    
+    audioDetector = new SimpleAudioDetector(fingerprintsDb, (matchName, confidence, metadata) => {
+        console.log(`[AUDIO] Match detected: ${matchName} (${(confidence * 100).toFixed(1)}%)`);
+        console.log(`[AUDIO] Energy: ${metadata.energy.toFixed(1)}dB at ${new Date(metadata.detectionTime).toLocaleTimeString()}`);
+        
+        // Only trigger if we're waiting for a match
+        if (gameState === 'WAITING') {
+            handleMatchEvent('MATCH_START', {
+                matchNumber: currentMatchNumber,
+                matchType: currentMatchType,
+                isManual: false,
+                confidence: confidence,
+                triggerType: 'audio',
+                audioMetadata: metadata
+            });
+        } else {
+            console.log(`[AUDIO] Ignoring detection - game state is: ${gameState}`);
+        }
+    });
+    
+    console.log('[AUDIO] Simple detector initialized with your optimized parameters');
+}
+
+// --- Enhanced Recording & Event Functions (Your existing functions) ---
 function generateFileName(cameraKey, matchNumber, matchType) {
     const timestamp = new Date().toISOString().replace(/:/g, '-').slice(0, -5);
     const matchTypeConfig = MATCH_TYPES[matchType] || MATCH_TYPES.practice;
@@ -368,7 +791,6 @@ function stopAllRecordings() {
         }
     }
     
-    // Log all files that were recorded
     if (recordingFiles.length > 0) {
         console.log(`[RECORDING] Stopped recordings: ${recordingFiles.join(', ')}`);
     }
@@ -390,11 +812,10 @@ function handleMatchEvent(eventType, payload = {}) {
         console.log(`[EVENT] ${matchTypeConfig.label} ${useMatchNumber} start triggered ${isManual ? '(Manual)' : '(Audio Detection)'}.`);
         gameState = 'RECORDING';
         matchStartTime = Date.now();
-        matchEndedBy = 'timer'; // Default assumption
+        matchEndedBy = 'timer';
         currentMatchNumber = useMatchNumber;
         currentMatchType = useMatchType;
         
-        // Start recording for all cameras with the specified match configuration
         Object.keys(cameraConfig).forEach(cameraKey => {
             startRecording(cameraKey, useMatchNumber, useMatchType);
         });
@@ -407,8 +828,6 @@ function handleMatchEvent(eventType, payload = {}) {
             matchStopTimeout = null;
             
             console.log(`[EVENT] Match completed. Files recorded: ${recordedFiles ? recordedFiles.join(', ') : 'None'}`);
-            
-            // Don't auto-increment here - let the client handle it
             saveMatchState();
         }, MATCH_DURATION_MS);
 
@@ -421,7 +840,6 @@ function handleMatchEvent(eventType, payload = {}) {
         matchStopTimeout = null;
         const recordedFiles = stopAllRecordings();
         
-        // Only save state if this was actually recording
         if (matchStartTime) {
             const duration = (Date.now() - matchStartTime) / 1000;
             console.log(`[EVENT] Match recording stopped after ${duration.toFixed(1)}s. Files: ${recordedFiles ? recordedFiles.join(', ') : 'None'}`);
@@ -433,7 +851,6 @@ function handleMatchEvent(eventType, payload = {}) {
     }
 }
 
-// Generate preview of files that would be recorded
 function generateFilePreview(matchNumber, matchType) {
     const matchTypeConfig = MATCH_TYPES[matchType] || MATCH_TYPES.practice;
     const files = [];
@@ -444,7 +861,7 @@ function generateFilePreview(matchNumber, matchType) {
             cameraKey,
             cameraName: camera.name,
             fileName: `${matchTypeConfig.prefix}${matchNumber}_${cameraKey}_[timestamp].mp4`,
-            estimatedSize: '~500MB' // Rough estimate for 2:35 recording
+            estimatedSize: '~500MB'
         });
     }
     
@@ -456,7 +873,7 @@ function generateFilePreview(matchNumber, matchType) {
     };
 }
 
-// --- HTTP Server with Enhanced API ---
+// --- HTTP Server with Enhanced API (MODIFIED to include audio endpoints) ---
 const server = http.createServer((req, res) => {
     const parsedUrl = require('url').parse(req.url, true);
     const { pathname } = parsedUrl;
@@ -524,9 +941,74 @@ function handleApiRoutes(req, res, pathname, method) {
             if (method === 'GET' && pathname === '/api/match-state') {
                 return res.writeHead(200).end(JSON.stringify({
                     currentMatchNumber,
+                    currentMatchType,
                     gameState,
                     isRecording: gameState === 'RECORDING',
-                    matchEndedBy
+                    matchEndedBy,
+                    audioDetectionActive
+                }));
+            }
+
+            // --- NEW: Audio Detection API Endpoints ---
+            if (method === 'POST' && pathname === '/api/audio/start') {
+                if (!audioDetector) initAudioDetector();
+                
+                if (!audioDetectionActive) {
+                    audioDetector.startListening();
+                    audioDetectionActive = true;
+                    console.log('[API] Audio detection started');
+                }
+                
+                return res.writeHead(200).end(JSON.stringify({ 
+                    success: true, 
+                    active: audioDetectionActive,
+                    status: audioDetector.getStatus()
+                }));
+            }
+
+            if (method === 'POST' && pathname === '/api/audio/stop') {
+                if (audioDetector && audioDetectionActive) {
+                    audioDetector.stopListening();
+                    audioDetectionActive = false;
+                    console.log('[API] Audio detection stopped');
+                }
+                
+                return res.writeHead(200).end(JSON.stringify({ 
+                    success: true, 
+                    active: audioDetectionActive 
+                }));
+            }
+
+            if (method === 'GET' && pathname === '/api/audio/status') {
+                const status = audioDetector ? audioDetector.getStatus() : { 
+                    isProcessing: false, 
+                    message: 'Detector not initialized' 
+                };
+                
+                return res.writeHead(200).end(JSON.stringify({
+                    active: audioDetectionActive,
+                    fingerprints: Object.keys(fingerprintsDb).length,
+                    ...status
+                }));
+            }
+
+            if (method === 'POST' && pathname === '/api/audio/test') {
+                console.log('[API] Manual audio test triggered');
+                
+                if (gameState === 'WAITING') {
+                    handleMatchEvent('MATCH_START', {
+                        matchNumber: currentMatchNumber,
+                        matchType: currentMatchType,
+                        isManual: true,
+                        confidence: 1.0,
+                        triggerType: 'manual-test'
+                    });
+                }
+                
+                return res.writeHead(200).end(JSON.stringify({ 
+                    success: true, 
+                    gameState: gameState,
+                    message: 'Test trigger sent'
                 }));
             }
             
@@ -574,12 +1056,17 @@ function handleApiRoutes(req, res, pathname, method) {
                 fs.writeFile(FINGERPRINTS_DB_PATH, JSON.stringify(fingerprintsDb, null, 2), (err) => {
                     if (err) return res.writeHead(500).end(JSON.stringify({ error: 'Could not save fingerprint' }));
                     console.log(`[FINGERPRINT] Saved: ${name} (${mfcc.length} coefficients)`);
+                    
+                    // --- NEW: Reinitialize audio detector with new fingerprints ---
+                    if (audioDetector) {
+                        initAudioDetector();
+                    }
+                    
                     res.writeHead(200).end(JSON.stringify({ success: true, name: name }));
                 });
                 return;
             }
             
-            // Delete fingerprint endpoint
             if (method === 'DELETE' && pathname.startsWith('/api/fingerprints/')) {
                 const fingerprintName = decodeURIComponent(pathname.split('/api/fingerprints/')[1]);
                 
@@ -589,6 +1076,12 @@ function handleApiRoutes(req, res, pathname, method) {
                     fs.writeFile(FINGERPRINTS_DB_PATH, JSON.stringify(fingerprintsDb, null, 2), (err) => {
                         if (err) return res.writeHead(500).end(JSON.stringify({ error: 'Could not delete fingerprint' }));
                         console.log(`[FINGERPRINT] Deleted: ${fingerprintName}`);
+                        
+                        // --- NEW: Reinitialize audio detector after deletion ---
+                        if (audioDetector) {
+                            initAudioDetector();
+                        }
+                        
                         res.writeHead(200).end(JSON.stringify({ success: true, deleted: fingerprintName }));
                     });
                 } else {
@@ -614,11 +1107,25 @@ function serveStaticFile(res, filePath, contentType) {
 
 server.listen(PORT, () => {
     console.log(`Server running at http://localhost:${PORT}`);
-    console.log(`Next match will be recorded as: match${currentMatchNumber}_[camera]_[timestamp].mp4`);
+    console.log(`Next match will be recorded as: ${MATCH_TYPES[currentMatchType].prefix}${currentMatchNumber}_[camera]_[timestamp].mp4`);
+    
+    // --- NEW: Audio detection status ---
+    if (audioDetector) {
+        console.log(`Audio detection ready with ${Object.keys(fingerprintsDb).length} fingerprints`);
+        console.log('Optimized for frequency range: 285-3207Hz with 5-second cooldown');
+    }
 });
 
+// --- Updated Shutdown Function ---
 function shutdown() {
     console.log('\nShutdown signal received...');
+    
+    // --- NEW: Stop audio detection ---
+    if (audioDetector && audioDetectionActive) {
+        console.log('[SHUTDOWN] Stopping audio detection...');
+        audioDetector.stopListening();
+    }
+    
     stopAllRecordings();
     saveMatchState();
     streamManager.shutdown();
