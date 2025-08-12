@@ -1,20 +1,17 @@
 {
   "name": "frc-replay-system",
   "version": "1.0.0",
-  "description": "IPCam Lite attachment server with NodeJS implementation for scaling replay systems",
+  "description": "Multi-camera replay system for FRC matches",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "node server.js"
   },
-  "keywords": [],
-  "author": "Christopher Luk",
-  "license": "ISC",
   "dependencies": {
-    "express": "^5.1.0",
-    "http": "^0.0.1-security",
-    "multer": "^2.0.1",
     "request": "^2.88.2",
-    "url": "^0.11.4",
-    "ws": "^8.18.3"
-  }
+    "ws": "^8.14.2"
+  },
+  "keywords": ["frc", "replay", "camera", "recording"],
+  "author": "",
+  "license": "MIT"
 }

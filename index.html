@@ -302,6 +302,15 @@
                 <button id="saveThresholdButton" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-md transition duration-300">Save Detection Settings</button>
             </div>
 
+            <div class="bg-gray-900/50 p-4 rounded-2xl shadow-lg border border-gray-700 space-y-4 mt-6">
+                <h2 class="text-2xl font-bold text-center">Connected Users</h2>
+                <div id="sessionsList" class="space-y-2 max-h-32 overflow-y-auto"></div>
+                <div class="flex gap-2">
+                    <input type="text" id="nameInput" placeholder="Change your name" class="flex-1 px-2 py-1 rounded bg-gray-700 text-white text-sm">
+                    <button id="updateNameBtn" class="bg-blue-600 hover:bg-blue-700 px-3 py-1 rounded text-sm">Update</button>
+                </div>
+            </div>
+            
             <h2 class="text-2xl font-bold mb-4 mt-6 text-center">Match Event Log</h2>
             <div id="eventLog" class="bg-gray-900/50 p-4 rounded-2xl shadow-lg border border-gray-700 space-y-3 h-64 overflow-y-auto"></div>
         </div>
@@ -334,6 +343,9 @@
         const thresholdLine = document.getElementById('thresholdLine');
         const saveThresholdButton = document.getElementById('saveThresholdButton');
         const detectionConfidence = document.getElementById('detectionConfidence');
+        const sessionsList = document.getElementById('sessionsList');
+        const nameInput = document.getElementById('nameInput');
+        const updateNameBtn = document.getElementById('updateNameBtn');
 
         // New match configuration elements
         const matchNumberInput = document.getElementById('matchNumberInput');
@@ -362,6 +374,14 @@
         let persistentOverlayData = {}; // Store overlay data to prevent overwriting
         let currentMatchData = {}; // Store current matching results
         
+        // WebSocket and session management
+        let ws = null;
+        let sessionId = null;
+        let isOwner = false;
+        let connectedSessions = [];
+        let reconnectAttempts = 0;
+        const maxReconnectAttempts = 5;
+        
         const LOUDNESS_HISTORY_LENGTH = 50;
         const MAX_LOUDNESS = 100;
         const MATCH_DURATION = 155 * 1000;
@@ -384,6 +404,12 @@
             updateGameStateDisplay();
             
             try {
+                // Get session first
+                const sessionResponse = await fetch('/api/session', { method: 'POST' });
+                const sessionData = await sessionResponse.json();
+                sessionId = sessionData.sessionId;
+                isOwner = sessionData.isOwner;
+                
                 const [cameras, fingerprints, thresholdData, matchState] = await Promise.all([
                     fetch('/api/cameras').then(res => res.json()),
                     fetch('/api/fingerprints').then(res => res.json()),
@@ -400,6 +426,8 @@
                 currentMatchNumber = matchState.currentMatchNumber || 1;
                 matchNumberInput.value = currentMatchNumber;
                 currentMatchDisplay.textContent = currentMatchNumber;
+                isOwner = matchState.isOwner;
+                connectedSessions = matchState.sessions || [];
                 
                 // Initialize fingerprint filters
                 initializeFingerprintFilters();
@@ -411,6 +439,12 @@
                 
                 // Update file preview after cameras are loaded
                 updateFilePreview();
+                
+                // Initialize WebSocket connection
+                initWebSocket();
+                
+                // Update UI based on ownership
+                updateOwnershipUI();
                 
                 // Immediate audio setup after camera initialization
                 setTimeout(() => {
@@ -509,6 +543,126 @@
             }
         }
 
+        function initWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}`;
+            
+            ws = new WebSocket(wsUrl);
+            
+            ws.onopen = () => {
+                console.log('[WS] Connected to server');
+                reconnectAttempts = 0;
+            };
+            
+            ws.onmessage = (event) => {
+                try {
+                    const message = JSON.parse(event.data);
+                    handleWebSocketMessage(message);
+                } catch (error) {
+                    console.error('[WS] Message parse error:', error);
+                }
+            };
+            
+            ws.onclose = () => {
+                console.log('[WS] Connection closed');
+                if (reconnectAttempts < maxReconnectAttempts) {
+                    setTimeout(() => {
+                        reconnectAttempts++;
+                        console.log(`[WS] Reconnecting... (${reconnectAttempts}/${maxReconnectAttempts})`);
+                        initWebSocket();
+                    }, 2000 * reconnectAttempts);
+                }
+            };
+            
+            ws.onerror = (error) => {
+                console.error('[WS] Connection error:', error);
+            };
+        }
+        
+        function handleWebSocketMessage(message) {
+            switch (message.type) {
+                case 'init':
+                    sessionId = message.sessionId;
+                    isOwner = message.isOwner;
+                    connectedSessions = message.sessions;
+                    updateOwnershipUI();
+                    updateSessionsList();
+                    break;
+                    
+                case 'match_started':
+                    currentMatchState = MATCH_STATES.RECORDING;
+                    currentMatchNumber = message.matchNumber;
+                    selectedMatchType = message.matchType;
+                    matchNumberInput.value = currentMatchNumber;
+                    currentMatchDisplay.textContent = currentMatchNumber;
+                    startMatchTimer();
+                    updateGameStateDisplay();
+                    updateFilePreview();
+                    logEvent('Match Started', `${MATCH_TYPES[message.matchType].label} ${message.matchNumber}`);
+                    break;
+                    
+                case 'match_aborted':
+                    currentMatchState = MATCH_STATES.WAITING;
+                    stopMatchTimer();
+                    if (message.nextMatchNumber) {
+                        matchNumberInput.value = message.nextMatchNumber;
+                        currentMatchDisplay.textContent = message.nextMatchNumber;
+                        updateFilePreview();
+                    }
+                    updateGameStateDisplay();
+                    logEvent('Match Aborted', 'Manual stop');
+                    break;
+                    
+                case 'sessions_updated':
+                    connectedSessions = message.sessions;
+                    updateSessionsList();
+                    break;
+                    
+                case 'ownership_transferred':
+                    isOwner = message.newOwner === sessionId;
+                    connectedSessions = message.sessions;
+                    updateOwnershipUI();
+                    updateSessionsList();
+                    logEvent('Ownership Transferred', isOwner ? 'You are now the owner' : 'Ownership transferred to another user');
+                    break;
+                    
+                case 'audio_status':
+                    isAudioListening = message.active;
+                    updateListeningIndicator();
+                    break;
+                    
+                case 'camera_reconnect_all':
+                    reconnectAllCameras();
+                    logEvent('Desync Detected', 'Reconnecting all cameras');
+                    break;
+            }
+        }
+        
+        function updateOwnershipUI() {
+            const ownerOnlyElements = [startMatchBtn, endMatchBtn, resetMatchBtn, 
+                                     matchNumberInput, matchNumberUp, matchNumberDown,
+                                     playTestAudioBtn, overlayFingerprintBtn, saveThresholdButton,
+                                     matchThresholdSlider, volumeSlider];
+            
+            document.querySelectorAll('.match-type-btn').forEach(btn => {
+                btn.disabled = !isOwner;
+                btn.style.opacity = isOwner ? '1' : '0.5';
+            });
+            
+            ownerOnlyElements.forEach(element => {
+                if (element) {
+                    element.disabled = !isOwner;
+                    element.style.opacity = isOwner ? '1' : '0.5';
+                }
+            });
+            
+            // Update title to show ownership status
+            const titleElement = document.querySelector('h1');
+            if (titleElement) {
+                titleElement.textContent = `Live Camera Feeds ${isOwner ? '(Owner)' : '(Viewer)'}`;
+            }
+        }
+        
         function updateFilePreview() {
             const cameraKeys = Array.from(players.keys());
             const matchTypeConfig = MATCH_TYPES[selectedMatchType];
@@ -545,6 +699,8 @@
         // Match type selection handlers
         document.querySelectorAll('.match-type-btn').forEach(btn => {
             btn.addEventListener('click', () => {
+                if (!isOwner) return;
+                
                 // Remove active from all buttons
                 document.querySelectorAll('.match-type-btn').forEach(b => {
                     b.classList.remove('active');
@@ -570,21 +726,39 @@
 
         // Match number controls
         matchNumberUp.addEventListener('click', () => {
+            if (!isOwner) return;
             const current = parseInt(matchNumberInput.value) || 1;
             matchNumberInput.value = Math.min(999, current + 1);
             updateFilePreview();
         });
 
         matchNumberDown.addEventListener('click', () => {
+            if (!isOwner) return;
             const current = parseInt(matchNumberInput.value) || 1;
             matchNumberInput.value = Math.max(1, current - 1);
             updateFilePreview();
         });
 
         matchNumberInput.addEventListener('input', () => {
+            if (!isOwner) return;
             const value = parseInt(matchNumberInput.value) || 1;
             matchNumberInput.value = Math.max(1, Math.min(999, value));
             updateFilePreview();
+        });
+        
+        // Session management
+        updateNameBtn.addEventListener('click', () => {
+            const newName = nameInput.value.trim();
+            if (newName && ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'update_name', name: newName }));
+                nameInput.value = '';
+            }
+        });
+        
+        nameInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                updateNameBtn.click();
+            }
         });
 
         function addCameraStream(cameraKey, cameraConfig) {
@@ -640,7 +814,8 @@
                 container,
                 messageArea,
                 reconnectAttempts: 0,
-                maxReconnectAttempts: 5
+                maxReconnectAttempts: 5,
+                triedNative: false
             };
             players.set(cameraKey, playerState);
             
@@ -663,6 +838,35 @@
             logEvent(`Manual reconnect: ${cameraKey}`, 'System');
         }
 
+        function tryNativeVideo(cameraKey) {
+            const state = players.get(cameraKey);
+            if (!state) return;
+            
+            console.log(`[CLIENT] Trying native video for ${cameraKey}`);
+            state.messageArea.textContent = 'Trying native video...';
+            
+            if (state.player) {
+                try {
+                    state.player.destroy();
+                } catch (e) {}
+                state.player = null;
+            }
+            
+            const streamUrl = `/stream?camera=${cameraKey}`;
+            state.videoElement.src = streamUrl;
+            state.videoElement.load();
+            
+            state.videoElement.onloadstart = () => {
+                state.messageArea.classList.add('hidden');
+                logEvent(`Native Video: ${cameraKey}`, 'Using HTML5 video');
+            };
+            
+            state.videoElement.onerror = () => {
+                state.messageArea.textContent = 'Stream format not supported';
+                logEvent(`Stream Failed: ${cameraKey}`, 'Format not supported by browser');
+            };
+        }
+        
         function reconnectAllCameras() {
             players.forEach((state, cameraKey) => {
                 state.reconnectAttempts = 0;
@@ -691,12 +895,20 @@
             console.log(`Stream URL for ${cameraKey}: ${streamUrl}`);
 
             state.player = mpegts.createPlayer({
-                type: 'flv', 
-                isLive: true, 
+                type: 'flv',
+                isLive: true,
                 url: streamUrl,
-                cors: true, 
-                hasAudio: true, 
-                hasVideo: true
+                hasAudio: true,
+                hasVideo: true,
+                enableWorker: false,
+                enableStashBuffer: false,
+                stashInitialSize: 128,
+                lazyLoadMaxDuration: 3 * 60,
+                seekType: 'range',
+                rangeLoadZeroStart: true,
+                headers: {
+                    'Range': 'bytes=0-'
+                }
             });
             
             state.player.on(mpegts.Events.MEDIA_INFO, (mediaInfo) => {
@@ -705,9 +917,32 @@
                 state.reconnectAttempts = 0;
                 logEvent(`Camera Connected: ${cameraKey}`, 'System');
             });
+            
+            state.player.on(mpegts.Events.LOADING_COMPLETE, () => {
+                console.log(`[CLIENT] Loading complete for ${cameraKey}`);
+            });
+            
+            state.player.on(mpegts.Events.RECOVERED_EARLY_EOF, () => {
+                console.log(`[CLIENT] Recovered early EOF for ${cameraKey}`);
+            });
 
             state.player.on(mpegts.Events.ERROR, (type, details, fatal) => {
                 console.error(`[CLIENT] Stream error for ${cameraKey}:`, type, details, fatal);
+                
+                // Check for format unsupported - fallback to native video only once
+                if (details && details.includes('FormatUnsupported') && !state.triedNative) {
+                    console.log(`[CLIENT] Format unsupported for ${cameraKey}, trying native video`);
+                    state.triedNative = true;
+                    tryNativeVideo(cameraKey);
+                    return;
+                }
+                
+                // Check for desync errors
+                if (details && (details.includes('desync') || details.includes('remux') || details.includes('timestamp'))) {
+                    console.log(`[DESYNC] Detected desync for ${cameraKey}:`, details);
+                    fetch('/api/desync', { method: 'POST' }).catch(e => console.warn('Failed to report desync:', e));
+                }
+                
                 state.reconnectAttempts++;
                 if (state.reconnectAttempts <= state.maxReconnectAttempts) {
                     const delay = 1000 * state.reconnectAttempts;
@@ -942,6 +1177,21 @@
         function sendMatchEvent(eventType) {
             if (eventType === 'MATCH_START' && currentMatchState !== MATCH_STATES.WAITING) return;
             
+            // Use WebSocket if available and owner, otherwise fallback to HTTP
+            if (ws && ws.readyState === WebSocket.OPEN && isOwner) {
+                if (eventType === 'MATCH_START') {
+                    ws.send(JSON.stringify({
+                        type: 'match_start',
+                        matchNumber: parseInt(matchNumberInput.value) || currentMatchNumber,
+                        matchType: selectedMatchType
+                    }));
+                } else if (eventType === 'MATCH_ABORT') {
+                    ws.send(JSON.stringify({ type: 'match_abort' }));
+                }
+                return;
+            }
+            
+            // Fallback to HTTP API for non-owners or when WebSocket unavailable
             const isManual = eventType === 'MATCH_ABORT' || 
                             (eventType === 'MATCH_START' && !isAudioListening);
             
@@ -951,7 +1201,6 @@
                 matchEndedBy = 'timer';
             }
             
-            // Get current match configuration
             const matchNum = parseInt(matchNumberInput.value) || 1;
             const matchTypeConfig = MATCH_TYPES[selectedMatchType];
             
@@ -971,28 +1220,50 @@
                         currentMatchNumber = matchNum;
                         currentMatchDisplay.textContent = currentMatchNumber;
                         startMatchTimer();
-                        // Don't stop listening - just update UI
                         logEvent(`${matchTypeConfig.label} ${matchNum} Started`, isManual ? 'Manual' : 'FRC Start Horn');
                     } else {
                         currentMatchState = MATCH_STATES.WAITING;
                         stopMatchTimer();
                         logEvent(`${matchTypeConfig.label} ${matchNum} Ended`, `${matchEndedBy === 'manual' ? 'Manual intervention' : 'Timer expired'}`);
                         
-                        // Auto-increment match number for next match
                         const nextMatchNum = matchNum + 1;
                         matchNumberInput.value = nextMatchNum;
                         currentMatchDisplay.textContent = nextMatchNum;
                         updateFilePreview();
                         
-                        // Immediately restart analysis after match ends
                         setTimeout(() => {
                             startAnalysis(true);
-                        }, 100); // Very short delay to ensure state is updated
+                        }, 100);
                     }
                     updateGameStateDisplay();
                     updateListeningIndicator();
                 }
             }).catch(err => console.error('Error sending match event:', err));
+        }
+        
+        function startMatchTimer() {
+            const endTime = Date.now() + MATCH_DURATION;
+            matchTimerInterval = setInterval(() => {
+                const remaining = endTime - Date.now();
+                if (remaining <= 0) {
+                    stopMatchTimer();
+                    matchTimerDisplay.textContent = '00:00';
+                    currentMatchState = MATCH_STATES.WAITING;
+                    matchEndedBy = 'timer';
+                    sendMatchEvent('MATCH_ABORT');
+                    updateGameStateDisplay();
+                } else {
+                    const minutes = Math.floor(remaining / 60000);
+                    const seconds = Math.floor((remaining % 60000) / 1000);
+                    matchTimerDisplay.textContent = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+                }
+            }, 1000);
+        }
+        
+        function stopMatchTimer() {
+            if (matchTimerInterval) clearInterval(matchTimerInterval);
+            matchTimerInterval = null;
+            matchTimerDisplay.textContent = '';
         }
 
         // Enhanced volume slider event listener with immediate audio context activation
@@ -1045,41 +1316,95 @@
         document.addEventListener('click', activateAudioOnInteraction, { once: false });
         document.addEventListener('keydown', activateAudioOnInteraction, { once: false });
 
-        startMatchBtn.addEventListener('click', () => sendMatchEvent('MATCH_START'));
-        endMatchBtn.addEventListener('click', () => {
-            matchEndedBy = 'manual';
-            sendMatchEvent('MATCH_ABORT');
+        function updateSessionsList() {
+            if (!sessionsList) return;
+            
+            sessionsList.innerHTML = '';
+            connectedSessions.forEach(session => {
+                const sessionDiv = document.createElement('div');
+                sessionDiv.className = 'flex items-center justify-between p-2 bg-gray-800 rounded';
+                
+                const nameSpan = document.createElement('span');
+                nameSpan.className = `text-sm ${session.isOwner ? 'text-yellow-400 font-bold' : 'text-gray-300'}`;
+                nameSpan.textContent = `${session.name} ${session.isOwner ? '(Owner)' : ''}`;
+                
+                const actionsDiv = document.createElement('div');
+                actionsDiv.className = 'flex gap-1';
+                
+                if (isOwner && !session.isOwner) {
+                    const transferBtn = document.createElement('button');
+                    transferBtn.className = 'bg-orange-600 hover:bg-orange-700 px-2 py-1 rounded text-xs';
+                    transferBtn.textContent = 'Make Owner';
+                    transferBtn.onclick = () => {
+                        if (ws && ws.readyState === WebSocket.OPEN) {
+                            ws.send(JSON.stringify({ type: 'transfer_ownership', targetSessionId: session.id }));
+                        }
+                    };
+                    actionsDiv.appendChild(transferBtn);
+                }
+                
+                const statusSpan = document.createElement('span');
+                statusSpan.className = `text-xs ${session.connected ? 'text-green-400' : 'text-red-400'}`;
+                statusSpan.textContent = session.connected ? '●' : '○';
+                actionsDiv.appendChild(statusSpan);
+                
+                sessionDiv.appendChild(nameSpan);
+                sessionDiv.appendChild(actionsDiv);
+                sessionsList.appendChild(sessionDiv);
+            });
+        }
+        
+        startMatchBtn.addEventListener('click', async () => {
+            if (!isOwner) return;
+            
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'match_start',
+                    matchNumber: parseInt(matchNumberInput.value) || currentMatchNumber,
+                    matchType: selectedMatchType
+                }));
+            }
         });
+        
+        endMatchBtn.addEventListener('click', async () => {
+            if (!isOwner) return;
+            
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'match_abort' }));
+            }
+        });
+        
         resetMatchBtn.addEventListener('click', () => {
-            matchEndedBy = 'manual';
-            sendMatchEvent('MATCH_ABORT');
+            if (!isOwner) return;
+            
+            currentMatchNumber = 1;
+            selectedMatchType = 'practice';
+            matchNumberInput.value = 1;
+            currentMatchDisplay.textContent = 1;
+            
+            // Reset match type buttons
+            document.querySelectorAll('.match-type-btn').forEach(btn => {
+                btn.classList.remove('active');
+                const type = btn.dataset.type;
+                const config = MATCH_TYPES[type];
+                btn.style.backgroundColor = 'transparent';
+                btn.style.color = config.color;
+            });
+            
+            // Set practice as active
+            const practiceBtn = document.querySelector('.match-type-btn[data-type="practice"]');
+            if (practiceBtn) {
+                practiceBtn.classList.add('active');
+                practiceBtn.style.backgroundColor = MATCH_TYPES.practice.color;
+                practiceBtn.style.color = 'white';
+            }
+            
+            updateFilePreview();
+            logEvent('System Reset', 'Match configuration reset to P1');
         });
         reconnectAllBtn.addEventListener('click', reconnectAllCameras);
 
-        function startMatchTimer() {
-            const endTime = Date.now() + MATCH_DURATION;
-            matchTimerInterval = setInterval(() => {
-                const remaining = endTime - Date.now();
-                if (remaining <= 0) {
-                    stopMatchTimer();
-                    matchTimerDisplay.textContent = '00:00';
-                    currentMatchState = MATCH_STATES.WAITING;
-                    matchEndedBy = 'timer';
-                    sendMatchEvent('MATCH_ABORT'); // This will log as timer expired
-                    updateGameStateDisplay();
-                } else {
-                    const minutes = Math.floor(remaining / 60000);
-                    const seconds = Math.floor((remaining % 60000) / 1000);
-                    matchTimerDisplay.textContent = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
-                }
-            }, 1000);
-        }
 
-        function stopMatchTimer() {
-            if (matchTimerInterval) clearInterval(matchTimerInterval);
-            matchTimerInterval = null;
-            matchTimerDisplay.textContent = '';
-        }
         
         function updateGameStateDisplay() {
             gameStateDisplay.textContent = currentMatchState;

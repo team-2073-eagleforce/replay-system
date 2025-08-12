@@ -4,6 +4,8 @@ const fs = require('fs');
 const path = require('path');
 const url = 'url';
 const { spawn } = require('child_process');
+const WebSocket = require('ws');
+const crypto = require('crypto');
 
 // --- Simple Audio Detector Class (Integrated) ---
 class SimpleAudioDetector {
@@ -629,6 +631,13 @@ const streamManager = new StreamManager();
 let audioDetector = null;
 let audioDetectionActive = false;
 
+// --- WebSocket Session Management ---
+let wss = null;
+let sessions = new Map(); // sessionId -> { ws, name, isOwner, lastSeen }
+let ownerSessionId = null;
+let desyncDetected = false;
+let reconnectScheduled = false;
+
 // Match type configurations (Your existing code)
 const MATCH_TYPES = {
     practice: { label: 'Practice', prefix: 'P' },
@@ -651,6 +660,50 @@ try {
     console.error('Could not read match state, starting from P1');
     currentMatchNumber = 1;
     currentMatchType = 'practice';
+}
+
+// --- WebSocket Functions ---
+function generateSessionId() {
+    return crypto.randomBytes(16).toString('hex');
+}
+
+function broadcastToClients(message, excludeSessionId = null) {
+    sessions.forEach((session, sessionId) => {
+        if (sessionId !== excludeSessionId && session.ws.readyState === WebSocket.OPEN) {
+            session.ws.send(JSON.stringify(message));
+        }
+    });
+}
+
+function getSessionList() {
+    return Array.from(sessions.entries()).map(([id, session]) => ({
+        id,
+        name: session.name,
+        isOwner: session.isOwner,
+        connected: session.ws && session.ws.readyState === WebSocket.OPEN
+    }));
+}
+
+function scheduleDesyncReconnect() {
+    if (reconnectScheduled || gameState === 'RECORDING') return;
+    
+    reconnectScheduled = true;
+    console.log('[DESYNC] Scheduling camera reconnect after match ends');
+    
+    const checkAndReconnect = () => {
+        if (gameState === 'WAITING' && desyncDetected) {
+            console.log('[DESYNC] Reconnecting all cameras due to desync');
+            broadcastToClients({
+                type: 'camera_reconnect_all'
+            });
+            desyncDetected = false;
+        }
+        reconnectScheduled = false;
+    };
+    
+    if (gameState === 'WAITING') {
+        setTimeout(checkAndReconnect, 2000);
+    }
 }
 
 // Save match state (Your existing function)
@@ -700,6 +753,16 @@ function initAudioDetector() {
         
         // Only trigger if we're waiting for a match
         if (gameState === 'WAITING') {
+            console.log(`[AUDIO] Triggering match start via WebSocket`);
+            broadcastToClients({
+                type: 'match_started',
+                matchNumber: currentMatchNumber,
+                matchType: currentMatchType,
+                gameState: 'RECORDING',
+                triggerType: 'audio',
+                confidence: confidence
+            });
+            
             handleMatchEvent('MATCH_START', {
                 matchNumber: currentMatchNumber,
                 matchType: currentMatchType,
@@ -828,6 +891,7 @@ function handleMatchEvent(eventType, payload = {}) {
             matchStopTimeout = null;
             
             console.log(`[EVENT] Match completed. Files recorded: ${recordedFiles ? recordedFiles.join(', ') : 'None'}`);
+            currentMatchNumber = useMatchNumber + 1; // Increment for next match
             saveMatchState();
         }, MATCH_DURATION_MS);
 
@@ -843,7 +907,7 @@ function handleMatchEvent(eventType, payload = {}) {
         if (matchStartTime) {
             const duration = (Date.now() - matchStartTime) / 1000;
             console.log(`[EVENT] Match recording stopped after ${duration.toFixed(1)}s. Files: ${recordedFiles ? recordedFiles.join(', ') : 'None'}`);
-            currentMatchNumber = useMatchNumber;
+            currentMatchNumber = useMatchNumber + 1; // Increment for next match
             currentMatchType = useMatchType;
             saveMatchState();
             matchStartTime = null;
@@ -875,6 +939,14 @@ function generateFilePreview(matchNumber, matchType) {
 
 // --- HTTP Server with Enhanced API (MODIFIED to include audio endpoints) ---
 const server = http.createServer((req, res) => {
+    // Handle session cookies
+    const cookies = {};
+    if (req.headers.cookie) {
+        req.headers.cookie.split(';').forEach(cookie => {
+            const [name, value] = cookie.trim().split('=');
+            cookies[name] = value;
+        });
+    }
     const parsedUrl = require('url').parse(req.url, true);
     const { pathname } = parsedUrl;
     const { method } = req;
@@ -887,6 +959,17 @@ const server = http.createServer((req, res) => {
     
     if (pathname === '/stream') {
         return streamManager.proxyStream(req, res, parsedUrl.query.camera, cameraConfig);
+    }
+    
+    if (pathname === '/api/session') {
+        if (method === 'POST') {
+            let sessionId = cookies.sessionId;
+            if (!sessionId || !sessions.has(sessionId)) {
+                sessionId = generateSessionId();
+                res.setHeader('Set-Cookie', `sessionId=${sessionId}; Path=/; HttpOnly`);
+            }
+            return res.writeHead(200).end(JSON.stringify({ sessionId, isOwner: sessionId === ownerSessionId }));
+        }
     }
     
     if (pathname.startsWith('/api/')) return handleApiRoutes(req, res, pathname, method);
@@ -908,6 +991,16 @@ const server = http.createServer((req, res) => {
 
 function handleApiRoutes(req, res, pathname, method) {
     res.setHeader('Content-Type', 'application/json');
+    
+    // Parse cookies
+    const cookies = {};
+    if (req.headers.cookie) {
+        req.headers.cookie.split(';').forEach(cookie => {
+            const [name, value] = cookie.trim().split('=');
+            cookies[name] = value;
+        });
+    }
+    
     let body = '';
     req.on('data', chunk => { body += chunk; });
     req.on('end', () => {
@@ -924,18 +1017,20 @@ function handleApiRoutes(req, res, pathname, method) {
             }
             
             if (method === 'GET' && pathname === '/api/recordings') {
-                return fs.readdir(RECORDINGS_DIR, (err, files) => {
+                fs.readdir(RECORDINGS_DIR, (err, files) => {
                     if (err) return res.writeHead(500).end(JSON.stringify({ error: 'Could not read recordings directory.' }));
                     const videos = files.filter(f => f.endsWith('.mp4')).sort().reverse();
                     res.writeHead(200).end(JSON.stringify(videos));
                 });
+                return;
             }
             
             if (method === 'GET' && pathname === '/api/threshold') {
-                return fs.readFile(THRESHOLD_PATH, 'utf8', (err, data) => {
+                fs.readFile(THRESHOLD_PATH, 'utf8', (err, data) => {
                     if (err) return res.writeHead(200).end(JSON.stringify({ threshold: 20 }));
                     res.writeHead(200).end(data);
                 });
+                return;
             }
             
             if (method === 'GET' && pathname === '/api/match-state') {
@@ -945,12 +1040,18 @@ function handleApiRoutes(req, res, pathname, method) {
                     gameState,
                     isRecording: gameState === 'RECORDING',
                     matchEndedBy,
-                    audioDetectionActive
+                    audioDetectionActive,
+                    sessions: getSessionList(),
+                    isOwner: cookies.sessionId === ownerSessionId
                 }));
             }
 
             // --- NEW: Audio Detection API Endpoints ---
             if (method === 'POST' && pathname === '/api/audio/start') {
+                if (cookies.sessionId !== ownerSessionId) {
+                    return res.writeHead(403).end(JSON.stringify({ error: 'Owner access required' }));
+                }
+                
                 if (!audioDetector) initAudioDetector();
                 
                 if (!audioDetectionActive) {
@@ -959,24 +1060,30 @@ function handleApiRoutes(req, res, pathname, method) {
                     console.log('[API] Audio detection started');
                 }
                 
-                return res.writeHead(200).end(JSON.stringify({ 
+                res.writeHead(200).end(JSON.stringify({ 
                     success: true, 
                     active: audioDetectionActive,
                     status: audioDetector.getStatus()
                 }));
+                return;
             }
 
             if (method === 'POST' && pathname === '/api/audio/stop') {
+                if (cookies.sessionId !== ownerSessionId) {
+                    return res.writeHead(403).end(JSON.stringify({ error: 'Owner access required' }));
+                }
+                
                 if (audioDetector && audioDetectionActive) {
                     audioDetector.stopListening();
                     audioDetectionActive = false;
                     console.log('[API] Audio detection stopped');
                 }
                 
-                return res.writeHead(200).end(JSON.stringify({ 
+                res.writeHead(200).end(JSON.stringify({ 
                     success: true, 
                     active: audioDetectionActive 
                 }));
+                return;
             }
 
             if (method === 'GET' && pathname === '/api/audio/status') {
@@ -985,14 +1092,19 @@ function handleApiRoutes(req, res, pathname, method) {
                     message: 'Detector not initialized' 
                 };
                 
-                return res.writeHead(200).end(JSON.stringify({
+                res.writeHead(200).end(JSON.stringify({
                     active: audioDetectionActive,
                     fingerprints: Object.keys(fingerprintsDb).length,
                     ...status
                 }));
+                return;
             }
 
             if (method === 'POST' && pathname === '/api/audio/test') {
+                if (cookies.sessionId !== ownerSessionId) {
+                    return res.writeHead(403).end(JSON.stringify({ error: 'Owner access required' }));
+                }
+                
                 console.log('[API] Manual audio test triggered');
                 
                 if (gameState === 'WAITING') {
@@ -1012,12 +1124,20 @@ function handleApiRoutes(req, res, pathname, method) {
                 }));
             }
             
+            if (method === 'POST' && pathname === '/api/desync') {
+                desyncDetected = true;
+                console.log('[API] Desync detected, scheduling reconnect');
+                scheduleDesyncReconnect();
+                res.writeHead(200).end(JSON.stringify({ success: true }));
+                return;
+            }
+            
             // Video info endpoint for recordings page
             if (method === 'GET' && pathname.startsWith('/api/video-info/')) {
                 const filename = decodeURIComponent(pathname.split('/api/video-info/')[1]);
                 const filePath = path.join(RECORDINGS_DIR, filename);
                 
-                return fs.stat(filePath, (err, stats) => {
+                fs.stat(filePath, (err, stats) => {
                     if (err) return res.writeHead(404).end(JSON.stringify({ error: 'File not found' }));
                     
                     res.writeHead(200).end(JSON.stringify({
@@ -1026,23 +1146,26 @@ function handleApiRoutes(req, res, pathname, method) {
                         modified: stats.mtime
                     }));
                 });
+                return;
             }
             
             if (method === 'POST' && pathname === '/api/threshold') {
-                return fs.writeFile(THRESHOLD_PATH, JSON.stringify(payload), (err) => {
+                fs.writeFile(THRESHOLD_PATH, JSON.stringify(payload), (err) => {
                     if (err) return res.writeHead(500).end(JSON.stringify({ error: 'Could not save threshold' }));
                     res.writeHead(200).end(JSON.stringify({ success: true }));
                 });
+                return;
             }
             
             if (method === 'POST' && pathname === '/api/match-event') {
                 handleMatchEvent(payload.eventType, payload);
-                return res.writeHead(200).end(JSON.stringify({ 
+                res.writeHead(200).end(JSON.stringify({ 
                     success: true, 
                     gameState: gameState,
                     currentMatchNumber,
                     matchEndedBy
                 }));
+                return;
             }
             
             if (method === 'POST' && pathname === '/api/fingerprints') {
@@ -1105,6 +1228,167 @@ function serveStaticFile(res, filePath, contentType) {
     });
 }
 
+// Initialize WebSocket server
+wss = new WebSocket.Server({ server });
+
+wss.on('connection', (ws, req) => {
+    const cookies = {};
+    if (req.headers.cookie) {
+        req.headers.cookie.split(';').forEach(cookie => {
+            const [name, value] = cookie.trim().split('=');
+            cookies[name] = value;
+        });
+    }
+    
+    let sessionId = cookies.sessionId;
+    
+    // Check if reconnecting owner
+    if (sessionId && sessionId === ownerSessionId && sessions.has(sessionId)) {
+        const existingSession = sessions.get(sessionId);
+        existingSession.ws = ws;
+        console.log(`[WS] Owner reconnected: ${sessionId}`);
+    } else {
+        if (!sessionId) sessionId = generateSessionId();
+        
+        // Set as owner if first connection
+        if (!ownerSessionId) {
+            ownerSessionId = sessionId;
+        }
+    }
+    
+    const isOwner = sessionId === ownerSessionId;
+    sessions.set(sessionId, {
+        ws,
+        name: isOwner ? 'Owner' : `User ${sessions.size + 1}`,
+        isOwner,
+        lastSeen: Date.now()
+    });
+    
+    console.log(`[WS] Client connected: ${sessionId} (${isOwner ? 'Owner' : 'Viewer'})`);
+    
+    // Send initial state
+    ws.send(JSON.stringify({
+        type: 'init',
+        sessionId,
+        isOwner,
+        matchState: {
+            currentMatchNumber,
+            currentMatchType,
+            gameState,
+            audioDetectionActive
+        },
+        sessions: getSessionList()
+    }));
+    
+    ws.on('message', (data) => {
+        try {
+            const message = JSON.parse(data);
+            const session = sessions.get(sessionId);
+            
+            if (!session) return;
+            
+            session.lastSeen = Date.now();
+            
+            switch (message.type) {
+                case 'match_start':
+                    if (!session.isOwner) break;
+                    const startMatchNumber = message.matchNumber || currentMatchNumber;
+                    const startMatchType = message.matchType || currentMatchType;
+                    handleMatchEvent('MATCH_START', {
+                        matchNumber: startMatchNumber,
+                        matchType: startMatchType,
+                        isManual: true
+                    });
+                    broadcastToClients({ 
+                        type: 'match_started', 
+                        matchNumber: startMatchNumber, 
+                        matchType: startMatchType,
+                        gameState: 'RECORDING'
+                    });
+                    break;
+                    
+                case 'match_abort':
+                    if (!session.isOwner) break;
+                    const prevMatchNumber = currentMatchNumber;
+                    handleMatchEvent('MATCH_ABORT', { isManual: true });
+                    broadcastToClients({ 
+                        type: 'match_aborted',
+                        gameState: 'WAITING',
+                        nextMatchNumber: currentMatchNumber // currentMatchNumber is already incremented in handleMatchEvent
+                    });
+                    break;
+                    
+                case 'update_name':
+                    session.name = message.name || session.name;
+                    broadcastToClients({ type: 'sessions_updated', sessions: getSessionList() });
+                    break;
+                    
+                case 'transfer_ownership':
+                    if (!session.isOwner) break;
+                    const targetSession = sessions.get(message.targetSessionId);
+                    if (targetSession) {
+                        session.isOwner = false;
+                        targetSession.isOwner = true;
+                        ownerSessionId = message.targetSessionId;
+                        broadcastToClients({ type: 'ownership_transferred', newOwner: message.targetSessionId, sessions: getSessionList() });
+                    }
+                    break;
+                    
+                case 'audio_start':
+                    if (!session.isOwner) break;
+                    if (!audioDetector) initAudioDetector();
+                    if (!audioDetectionActive) {
+                        audioDetector.startListening();
+                        audioDetectionActive = true;
+                    }
+                    broadcastToClients({ type: 'audio_status', active: audioDetectionActive });
+                    break;
+                    
+                case 'audio_stop':
+                    if (!session.isOwner) break;
+                    if (audioDetector && audioDetectionActive) {
+                        audioDetector.stopListening();
+                        audioDetectionActive = false;
+                    }
+                    broadcastToClients({ type: 'audio_status', active: audioDetectionActive });
+                    break;
+            }
+        } catch (error) {
+            console.error('[WS] Message error:', error);
+        }
+    });
+    
+    ws.on('close', () => {
+        console.log(`[WS] Client disconnected: ${sessionId}`);
+        sessions.delete(sessionId);
+        
+        // Only transfer ownership if not recording and owner disconnected
+        if (sessionId === ownerSessionId) {
+            if (gameState === 'RECORDING') {
+                console.log('[WS] Owner disconnected during recording - maintaining ownership');
+                // Keep owner session but mark as disconnected
+                sessions.set(sessionId, {
+                    ws: null,
+                    name: 'Owner (Disconnected)',
+                    isOwner: true,
+                    lastSeen: Date.now()
+                });
+            } else if (sessions.size > 0) {
+                const newOwnerEntry = sessions.entries().next().value;
+                if (newOwnerEntry) {
+                    ownerSessionId = newOwnerEntry[0];
+                    newOwnerEntry[1].isOwner = true;
+                    broadcastToClients({ type: 'ownership_transferred', newOwner: ownerSessionId, sessions: getSessionList() });
+                }
+            } else {
+                ownerSessionId = null;
+            }
+        }
+        
+        broadcastToClients({ type: 'sessions_updated', sessions: getSessionList() });
+    });
+});
+
 server.listen(PORT, () => {
     console.log(`Server running at http://localhost:${PORT}`);
     console.log(`Next match will be recorded as: ${MATCH_TYPES[currentMatchType].prefix}${currentMatchNumber}_[camera]_[timestamp].mp4`);
@@ -1129,6 +1413,7 @@ function shutdown() {
     stopAllRecordings();
     saveMatchState();
     streamManager.shutdown();
+    if (wss) wss.close();
     server.close(() => {
         console.log('HTTP server closed.');
         process.exit(0);
